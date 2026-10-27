@@ -13,7 +13,7 @@
 | Primary database | PostgreSQL 18.x (verify current supported stable major/minor at repository creation) | **Confirmed** | Best fit for transactional ledger writes, concurrent household edits, relational constraints, row locking, and robust integration tests. |
 | Lightweight database alternative | SQLite | Not recommended as primary | Very simple to deploy and good for embedded/single-process use, but SQLite allows only one writer at a time and differs from PostgreSQL concurrency behavior. |
 | Other relational alternative | MySQL/MariaDB | Viable but not preferred | GORM supports it, but it offers no clear benefit for this project's current requirements over PostgreSQL. |
-| Schema changes | Versioned SQL migrations | Recommended | Reviewable, repeatable migration history for financially significant constraints and indexes. Do not rely on production `AutoMigrate` as the schema-change strategy. |
+| Schema changes | Versioned SQL migrations with Goose | **Selected** | Reviewable, repeatable migration history for financially significant constraints and indexes. Do not rely on production `AutoMigrate` as the schema-change strategy. |
 | Tests | Pure Go domain tests plus PostgreSQL integration tests | Recommended | Domain behavior should be tested without a database; persistence, constraints, transactions, locking and migrations should be tested against the actual production engine. |
 
 ## 2. Go version policy
@@ -122,7 +122,7 @@ Use a disposable PostgreSQL instance for CI integration tests (for example, a te
 ## 9. Open choices that should not block domain work
 
 - Exact HTTP middleware/auth library.
-- Migration tool (for example, Goose or Atlas); decision must preserve versioned, reviewed migrations.
+- Migration tool: Goose with versioned, reviewed SQL migrations (selected; see `PLATFORM_DECISIONS.md` §D).
 - PostgreSQL minor version and container image pinning policy at repository creation.
 - Logging/metrics libraries.
 - API schema tooling (OpenAPI generation or handwritten contract).
@@ -130,7 +130,7 @@ Use a disposable PostgreSQL instance for CI integration tests (for example, a te
 ## 10. Decision status
 
 - **Confirmed by product owner:** Go; GORM; PostgreSQL 18.x as the primary and integration-test database; standard library `net/http` with `http.ServeMux`.
-- **Recommended implementation approach:** versioned SQL migrations and a modular monolith. The migration tool remains undecided.
+- **Recommended implementation approach:** versioned SQL migrations and a modular monolith. The migration tool is selected: Goose.
 - **Still open:** PostgreSQL minor version/image pinning at repository creation, HTTP middleware/authentication libraries, API schema tooling, and logging/metrics libraries.
 
 Agents should implement the selected stack unless they identify a concrete technical blocker. Any proposed deviation must be documented with its rationale, impact, and tests before changing the stack decision.
