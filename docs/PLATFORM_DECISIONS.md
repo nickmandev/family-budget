@@ -60,4 +60,4 @@
 
 ## Confirmation scope
 
-The owner has confirmed platform decisions A–F above, with Hetzner VPS as deployment target. This confirmation does **not** approve separate agent questions Q1–Q10 about accounting edge cases; those remain open pending explicit owner approval.
+The owner has confirmed platform decisions A–F above, with Hetzner VPS as deployment target. The confirmation of platform decisions A–F above is independent of the accounting edge-case questions Q1–Q10. Those were subsequently approved by the owner (2026-10-27, with refinements to Q2 and Q4) and their resolutions are recorded in `IMPLEMENTATION_DECISIONS.md`.
