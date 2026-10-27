@@ -1,0 +1,106 @@
+specification: household-envelope-budgeting-accounting
+version: 1.0
+status: proposed-domain-contract
+scope:
+  clients: [android]
+  household_users: multiple
+  currency_mode: single_household_currency
+  budget_period: calendar_month
+  month_timezone: household_configured_timezone
+  onboarding: opening_balances_only
+principles:
+  budget_only_existing_eligible_liquid_funds: true
+  allow_unallocated_money: true
+  unallocated_label: Ready to assign
+  envelope_rollover: automatic_continuous_balance
+  forecast_income_is_budgetable: false
+  committed_ledger_is_append_only: true
+  corrections: compensating_postings_and_optional_replacement
+  backend_is_balance_authority: true
+accounts:
+  eligibility: per_account
+  eligible_types: [checking, savings, cash_wallet]
+  excluded_from_budgetable_cash: [investments, credit_limits, excluded_accounts]
+  account_currency: household_currency_only
+  opening_balances_are_income: false
+budget:
+  identity: "budgetable_cash = ready_to_assign + sum(envelope_balances)"
+  ready_to_assign_is_derived: true
+  negative_ready_to_assign_allowed_only_for: [actual_financial_reality, explicitly_handled_exception, correction_or_reconciliation_state]
+  spendable_envelope: "envelope_balance - active_reservations"
+  monthly_targets_create_allocations: false
+spending:
+  planned_purchase_policy: reallocation_first
+  emergency_override:
+    available_to_any_household_member: true
+    reason_required: true
+    shared_visibility: true
+    may_bypass_envelope_funding_only: true
+    may_bypass_account_liquidity: false
+  externally_completed_purchase:
+    must_be_recorded_truthfully: true
+    underfunding_must_be_flagged: true
+reservations:
+  only_explicitly_planned_purchases: true
+  drafts_reserve_funds: false
+  notification_suggestions_reserve_funds: false
+  debit_cash_purchase_reserves_account_and_envelope: true
+  credit_card_purchase_reserves_envelope: true
+credit_cards:
+  model_as_liabilities: true
+  credit_limit_is_budgetable_cash: false
+  purchase_moves_budget_to_payment_envelope: true
+  repayment_is_not_second_expense: true
+  opening_debt_creates_historical_spending: false
+refunds:
+  linked_to_original: true
+  partial_refunds_supported: true
+  duplicate_refunds_prevented: true
+  card_refund_may_make_payment_envelope_negative: true
+transactions:
+  opening_balance_only_onboarding: true
+  future_notification_ingestion: planned
+  notification_processing_default: local_only
+  notification_suggestion_is_committed_transaction: false
+  notification_suggestion_affects_balance: false
+integrity:
+  money_storage: integer_minor_units
+  idempotency_required: true
+  concurrency_safe_balance_updates: true
+  cross_household_isolation_required: true
+  audit_actor_and_timestamp_required: true
+  balances_rebuildable_from_journal: true
+non_goals_mvp:
+  - notification_listener
+  - bank_api_integrations
+  - multi_currency_and_fx
+  - historical_import_required_for_onboarding
+  - forecast_income_funding
+  - investment_and_property_net_worth
+
+implementation_stack:
+  language:
+    value: Go
+    status: confirmed
+  orm:
+    value: GORM
+    status: confirmed
+  http_routing:
+    value: standard_library_net_http
+    alternative: Gin (not selected)
+    status: confirmed
+  primary_database:
+    value: PostgreSQL 18.x (verify current supported stable major/minor at repository creation)
+    alternatives: SQLite for embedded/single-writer use; MySQL/MariaDB viable but not preferred
+    status: confirmed
+  migrations:
+    approach: versioned_sql_migrations
+    tool: undecided
+  tests:
+    domain: pure_go_unit_and_property_tests
+    integration: PostgreSQL
+    sqlite_as_postgres_substitute: false
+  architecture:
+    style: modular_monolith
+    domain_depends_on_gorm: false
+    domain_depends_on_http_framework: false
