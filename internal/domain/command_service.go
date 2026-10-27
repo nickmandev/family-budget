@@ -38,6 +38,13 @@ type CommandService struct {
 	ledger  *LedgerState
 	idem    *IdempotencyStore
 
+	// plans and suggestions hold the non-financial lifecycle aggregates at the
+	// household command boundary (DOMAIN_MODEL §2). They are protected by mu:
+	// a lifecycle command validates a clone, commits the ledger and journal, and
+	// installs the clone in the same critical section.
+	plans       map[PlanId]*PlannedOperation
+	suggestions map[SuggestionId]*Suggestion
+
 	// nextOp is the monotonically increasing operation-id sequence. Operation
 	// ids are allocated only at commit time, after idempotency replay has been
 	// ruled out, so replays never consume an id.
@@ -92,13 +99,15 @@ func NewCommandService(household HouseholdId, currency Currency, accounts []Acco
 		return nil, err
 	}
 	return &CommandService{
-		household: household,
-		currency:  currency,
-		accounts:  append([]AccountMeta(nil), accounts...),
-		envelopes: append([]EnvelopeId(nil), envelopes...),
-		journal:   NewJournal(household),
-		ledger:    ledger,
-		idem:      NewIdempotencyStore(),
+		household:   household,
+		currency:    currency,
+		accounts:    append([]AccountMeta(nil), accounts...),
+		envelopes:   append([]EnvelopeId(nil), envelopes...),
+		journal:     NewJournal(household),
+		ledger:      ledger,
+		idem:        NewIdempotencyStore(),
+		plans:       make(map[PlanId]*PlannedOperation),
+		suggestions: make(map[SuggestionId]*Suggestion),
 	}, nil
 }
 
