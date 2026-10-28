@@ -268,8 +268,8 @@ func (g *petGenerator) amount(min, max int64) PositiveAmount {
 	return mustPositiveAmountForTest(g.t, g.minor(min, max), g.f.currency)
 }
 
-func (g *petGenerator) amountUpTo(max PositiveAmount) PositiveAmount {
-	limit := max.MinorUnits()
+func (g *petGenerator) amountUpTo(remaining int64) PositiveAmount {
+	limit := remaining
 	if limit > 5_000 {
 		limit = 5_000
 	}
@@ -277,6 +277,91 @@ func (g *petGenerator) amountUpTo(max PositiveAmount) PositiveAmount {
 		limit = 1
 	}
 	return g.amount(1, limit)
+}
+
+// refundableRemaining returns how much of a committed purchase is still
+// refundable according to the journal. Deriving the cap from the same helpers
+// the command layer uses keeps the generator from proposing a refund the
+// journal would reject because earlier refunds already consumed the remainder.
+func (g *petGenerator) refundableRemaining(original JournalOperationId) (int64, bool) {
+	op, err := g.f.service.journal.Operation(original)
+	if err != nil {
+		return 0, false
+	}
+	magnitude, err := operationMagnitude(op)
+	if err != nil {
+		return 0, false
+	}
+	refunded, err := g.f.service.linkedRefundTotal(original)
+	if err != nil {
+		return 0, false
+	}
+	remaining, err := magnitude.Sub(refunded)
+	if err != nil {
+		return 0, false
+	}
+	return remaining.MinorUnits(), true
+}
+
+// reversibleRemaining returns how much of a committed operation is still
+// reversible according to the journal, mirroring ReverseOperation's own check.
+func (g *petGenerator) reversibleRemaining(original JournalOperationId) (int64, bool) {
+	op, err := g.f.service.journal.Operation(original)
+	if err != nil {
+		return 0, false
+	}
+	magnitude, err := operationMagnitude(op)
+	if err != nil {
+		return 0, false
+	}
+	reversed, err := g.f.service.linkedReversalTotal(original)
+	if err != nil {
+		return 0, false
+	}
+	remaining, err := magnitude.Sub(reversed)
+	if err != nil {
+		return 0, false
+	}
+	return remaining.MinorUnits(), true
+}
+
+// pickRefundablePurchase chooses a purchase that still has refundable amount.
+func (g *petGenerator) pickRefundablePurchase(purchases []petPurchase) (petPurchase, int64, bool) {
+	candidates := make([]int, 0, len(purchases))
+	limits := make(map[int]int64, len(purchases))
+	for i, purchase := range purchases {
+		remaining, ok := g.refundableRemaining(purchase.opID)
+		if !ok || remaining < 1 {
+			continue
+		}
+		candidates = append(candidates, i)
+		limits[i] = remaining
+	}
+	if len(candidates) == 0 {
+		return petPurchase{}, 0, false
+	}
+	index := candidates[g.rng.IntN(len(candidates))]
+	return purchases[index], limits[index], true
+}
+
+// pickReversibleOperation chooses a committed operation that still has
+// reversible amount.
+func (g *petGenerator) pickReversibleOperation(ops []petReversible) (petReversible, int64, bool) {
+	candidates := make([]int, 0, len(ops))
+	limits := make(map[int]int64, len(ops))
+	for i, op := range ops {
+		remaining, ok := g.reversibleRemaining(op.opID)
+		if !ok || remaining < 1 {
+			continue
+		}
+		candidates = append(candidates, i)
+		limits[i] = remaining
+	}
+	if len(candidates) == 0 {
+		return petReversible{}, 0, false
+	}
+	index := candidates[g.rng.IntN(len(candidates))]
+	return ops[index], limits[index], true
 }
 
 func (g *petGenerator) signed(min, max int64) int64 {

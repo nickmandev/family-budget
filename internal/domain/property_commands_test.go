@@ -298,12 +298,12 @@ func (g *petGenerator) factoryTransferExcluded() petOp {
 }
 
 func (g *petGenerator) factoryCashRefund() petOp {
-	if len(g.debitPurchases) == 0 {
+	purchase, remaining, ok := g.pickRefundablePurchase(g.debitPurchases)
+	if !ok {
 		return g.factoryDebitPurchase()
 	}
-	purchase := g.debitPurchases[g.rng.IntN(len(g.debitPurchases))]
 	env := g.nextEnv("")
-	amount := g.amountUpTo(purchase.amount)
+	amount := g.amountUpTo(remaining)
 	account := g.pickEligibleAccount()
 	return petOp{
 		row:   petRowCashRefund,
@@ -316,12 +316,12 @@ func (g *petGenerator) factoryCashRefund() petOp {
 }
 
 func (g *petGenerator) factoryCardRefund() petOp {
-	if len(g.cardPurchases) == 0 {
+	purchase, remaining, ok := g.pickRefundablePurchase(g.cardPurchases)
+	if !ok {
 		return g.factoryCardPurchase()
 	}
-	purchase := g.cardPurchases[g.rng.IntN(len(g.cardPurchases))]
 	env := g.nextEnv("")
-	amount := g.amountUpTo(purchase.amount)
+	amount := g.amountUpTo(remaining)
 	card := purchase.meta.cardAccount
 	if card.IsZero() {
 		card = g.f.card

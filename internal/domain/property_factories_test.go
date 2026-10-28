@@ -277,17 +277,21 @@ func (g *petGenerator) correctionEffects() Effects {
 }
 
 func (g *petGenerator) factoryReversal() petOp {
-	if len(g.reversible) == 0 {
+	original, remaining, ok := g.pickReversibleOperation(g.reversible)
+	if !ok {
 		return g.factoryIncomeEligible()
 	}
-	original := g.reversible[g.rng.IntN(len(g.reversible))]
+	// Resolve the amount outside the closure: the runner replays it with fresh
+	// idempotency metadata, and drawing a new random amount on replay would make
+	// the retry a different request instead of the same one.
+	amount := g.amountUpTo(remaining)
 	env := g.nextEnv("")
 	return petOp{
 		row:   petRowReversal,
-		label: fmt.Sprintf("ReverseOperation(%s, %d)", original.opID, original.amount.MinorUnits()),
+		label: fmt.Sprintf("ReverseOperation(%s, %d)", original.opID, amount.MinorUnits()),
 		env:   env,
 		run: func(e CommandEnvelope) (JournalOperation, error) {
-			return g.f.service.ReverseOperation(e, original.opID, g.amountUpTo(original.amount), "property reversal")
+			return g.f.service.ReverseOperation(e, original.opID, amount, "property reversal")
 		},
 	}
 }
