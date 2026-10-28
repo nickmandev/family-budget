@@ -1,11 +1,17 @@
 package deploy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// caddyfilePath is the old reverse-proxy config. It must not exist: the
+// operator's host nginx with Let's Encrypt is the public front door.
+const caddyfilePath = "Caddyfile"
 
 // composeDocument is the subset of the Compose schema these static guards
 // inspect. It is intentionally not a full schema model.
@@ -81,30 +87,41 @@ func TestComposeTopology(t *testing.T) {
 	db := requireService(t, doc, "db")
 	api := requireService(t, doc, "api")
 	migrate := requireService(t, doc, "migrate")
-	caddy := requireService(t, doc, "caddy")
 
-	// (a) PostgreSQL must not be reachable from the host.
+	// (a) Caddy is gone; the host nginx is the public front door.
+	if _, ok := doc.Services["caddy"]; ok {
+		t.Error("compose.yaml still declares a caddy service; the host nginx terminates TLS")
+	}
+
+	// (b) PostgreSQL must not be reachable from the host.
 	if len(db.Ports) != 0 {
 		t.Errorf("db publishes host ports %v; PostgreSQL must stay on the private network", db.Ports)
 	}
 	if !contains(db.Expose, "5432") {
 		t.Errorf("db exposes %v, want the internal 5432 port", db.Expose)
 	}
-	for _, service := range []string{"db", "api", "migrate"} {
-		if ports := doc.Services[service].Ports; service != "db" && len(ports) != 0 {
-			t.Errorf("%s publishes host ports %v; only caddy may publish ports", service, ports)
+
+	// (c) Only the API publishes a host port, and only on loopback.
+	for name, service := range doc.Services {
+		if name == "api" {
+			continue
+		}
+		if len(service.Ports) != 0 {
+			t.Errorf("%s publishes host ports %v; only api may publish a loopback port", name, service.Ports)
 		}
 	}
-
-	// Only Caddy publishes ports, and only 80/443.
-	if len(caddy.Ports) == 0 {
-		t.Fatal("caddy publishes no ports; HTTPS would be unreachable")
+	if len(api.Ports) != 1 {
+		t.Fatalf("api ports = %v, want exactly one loopback publish", api.Ports)
 	}
-	if !contains(caddy.Ports, "443:443") || !contains(caddy.Ports, "80:80") {
-		t.Errorf("caddy ports = %v, want 80:80 and 443:443", caddy.Ports)
+	binding := api.Ports[0]
+	if !strings.HasPrefix(binding, "127.0.0.1:") {
+		t.Errorf("api host binding = %q, want a 127.0.0.1: loopback prefix", binding)
+	}
+	if strings.Contains(binding, "0.0.0.0") || strings.HasPrefix(binding, ":") {
+		t.Errorf("api host binding = %q must not bind all interfaces", binding)
 	}
 
-	// Internal database network and a separate public-edge network.
+	// (d) Internal database network and a separate non-internal edge network.
 	backend, ok := doc.Networks["backend"]
 	if !ok {
 		t.Fatal("compose.yaml has no backend network")
@@ -112,8 +129,11 @@ func TestComposeTopology(t *testing.T) {
 	if !backend.Internal {
 		t.Error("backend network must be internal so db has no outbound route")
 	}
-	if _, ok := doc.Networks["frontend"]; !ok {
+	frontend, ok := doc.Networks["frontend"]
+	if !ok {
 		t.Error("compose.yaml has no frontend network")
+	} else if frontend.Internal {
+		t.Error("frontend network must be non-internal for the loopback publish to work")
 	}
 	if !contains(db.Networks, "backend") || contains(db.Networks, "frontend") {
 		t.Errorf("db networks = %v, want backend only", db.Networks)
@@ -121,13 +141,20 @@ func TestComposeTopology(t *testing.T) {
 	if !contains(api.Networks, "backend") || !contains(api.Networks, "frontend") {
 		t.Errorf("api networks = %v, want backend and frontend", api.Networks)
 	}
-	if !contains(caddy.Networks, "frontend") || contains(caddy.Networks, "backend") {
-		t.Errorf("caddy networks = %v, want frontend only", caddy.Networks)
+	for name, service := range doc.Services {
+		if name != "api" && contains(service.Networks, "frontend") {
+			t.Errorf("%s is on the frontend network; only api may use it", name)
+		}
 	}
 
-	// (f) Durable PostgreSQL data on a named volume (PG18 path).
+	// (e) Durable PostgreSQL data on a named volume (PG18 path); no proxy state.
 	if _, ok := doc.Volumes["pgdata"]; !ok {
 		t.Error("compose.yaml declares no pgdata volume")
+	}
+	for _, gone := range []string{"caddy_data", "caddy_config"} {
+		if _, ok := doc.Volumes[gone]; ok {
+			t.Errorf("compose.yaml still declares the %s volume", gone)
+		}
 	}
 	if !contains(db.Volumes, "pgdata:/var/lib/postgresql") {
 		t.Errorf("db volumes = %v, want pgdata:/var/lib/postgresql for PostgreSQL 18", db.Volumes)
@@ -141,18 +168,19 @@ func TestComposeTopology(t *testing.T) {
 		t.Errorf("migrate build target = %+v, want the Dockerfile migrate stage", migrate.Build)
 	}
 
-	// Secrets stay with the service that needs them.
-	if _, ok := caddy.Environment["DATABASE_URL"]; ok {
-		t.Error("caddy must not receive DATABASE_URL")
-	}
-	if _, ok := caddy.Environment["POSTGRES_PASSWORD"]; ok {
-		t.Error("caddy must not receive POSTGRES_PASSWORD")
-	}
+	// Secrets stay with the service that needs them; TLS is the host's job.
 	if _, ok := api.Environment["POSTGRES_PASSWORD"]; ok {
 		t.Error("api must not receive POSTGRES_PASSWORD; it needs only DATABASE_URL")
 	}
-	if _, ok := caddy.Environment["DOMAIN"]; !ok {
-		t.Error("caddy does not receive DOMAIN")
+	if _, ok := db.Environment["DATABASE_URL"]; ok {
+		t.Error("db must not receive DATABASE_URL; only api and migrate need it")
+	}
+	for name, service := range doc.Services {
+		for _, gone := range []string{"DOMAIN", "ACME_EMAIL"} {
+			if _, ok := service.Environment[gone]; ok {
+				t.Errorf("%s still receives %s; TLS is the host nginx's job", name, gone)
+			}
+		}
 	}
 }
 
@@ -184,7 +212,7 @@ func TestComposeImagesPinnedAndLogged(t *testing.T) {
 	}
 
 	// Long-running services restart; the one-shot migration does not.
-	for _, name := range []string{"db", "api", "caddy"} {
+	for _, name := range []string{"db", "api"} {
 		if restart := doc.Services[name].Restart; restart != "unless-stopped" {
 			t.Errorf("%s restart = %q, want unless-stopped", name, restart)
 		}
@@ -224,25 +252,23 @@ func TestComposeHealthAndDependencies(t *testing.T) {
 	if got := api.DependsOn["db"].Condition; got != "service_healthy" {
 		t.Errorf("api depends_on db = %q, want service_healthy", got)
 	}
-	if got := doc.Services["caddy"].DependsOn["api"].Condition; got != "service_healthy" {
-		t.Errorf("caddy depends_on api = %q, want service_healthy", got)
+	if _, ok := api.DependsOn["caddy"]; ok {
+		t.Error("api still depends_on caddy")
 	}
 }
 
-func TestCaddyfileProxiesToAPIService(t *testing.T) {
-	caddyfile := readDeployFile(t, "Caddyfile")
+func TestNoCaddyfileOrCaddyReferences(t *testing.T) {
+	if _, err := os.Stat(filepath.Join("..", caddyfilePath)); !os.IsNotExist(err) {
+		t.Errorf("Caddyfile must not exist (os.Stat err = %v)", err)
+	}
 
-	if !strings.Contains(caddyfile, "reverse_proxy api:") {
-		t.Error("Caddyfile does not reverse_proxy to the compose service `api`")
-	}
-	if !strings.Contains(caddyfile, "{$DOMAIN") {
-		t.Error("Caddyfile does not take the site address from {$DOMAIN}")
-	}
-	if !strings.Contains(caddyfile, "encode ") {
-		t.Error("Caddyfile does not enable response compression")
-	}
-	if !strings.Contains(caddyfile, "Strict-Transport-Security") {
-		t.Error("Caddyfile is missing HSTS and the rest of the security headers")
+	for name, content := range map[string]string{
+		"compose.yaml": readDeployFile(t, "compose.yaml"),
+		".env.example": readDeployFile(t, ".env.example"),
+	} {
+		if strings.Contains(strings.ToLower(content), "caddy") {
+			t.Errorf("%s still references caddy; the host nginx is the front door", name)
+		}
 	}
 }
 
@@ -254,8 +280,7 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 		"POSTGRES_PASSWORD",
 		"POSTGRES_DB",
 		"DATABASE_URL",
-		"DOMAIN",
-		"ACME_EMAIL",
+		"API_HOST_PORT",
 		"PORT",
 		"HTTP_MAX_BODY_BYTES",
 		"AUTH_ARGON2_TIME",
@@ -265,6 +290,12 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 	for _, name := range required {
 		if !strings.Contains(example, name+"=") {
 			t.Errorf(".env.example does not document %s", name)
+		}
+	}
+
+	for _, gone := range []string{"DOMAIN=", "ACME_EMAIL="} {
+		if strings.Contains(example, gone) {
+			t.Errorf(".env.example still defines %s; the hostname belongs to the nginx snippet", gone)
 		}
 	}
 

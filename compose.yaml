@@ -2,9 +2,11 @@ name: family-budget
 
 # Deployment topology (PLATFORM_DECISIONS §F, SECURITY_AND_OPERATIONS):
 #
-#   internet -> caddy (publishes 80/443 only)
+#   internet -> nginx :80/:443 (host, Let's Encrypt TLS)
 #                  |
-#               api:8080 (frontend + backend, no host port)
+#         127.0.0.1:8080 (loopback publish only)
+#                  |
+#               api:8080
 #                  |
 #        +---------+---------+
 #        |                   |
@@ -13,9 +15,12 @@ name: family-budget
 # `backend` is an internal network: containers attached only to it (db) have no
 # external route. PostgreSQL is never published to the host or the internet.
 #
+# `frontend` is a non-internal network used only by `api` so the loopback port
+# publish is reliable. It carries no other service. The API's only host
+# exposure is the loopback binding; the host's existing nginx proxies to it.
+#
 # Image pins (re-check the stable minor at upgrade time; never use `latest`):
 #   postgres:18.6  - current PostgreSQL 18 stable minor at authoring time
-#   caddy:2.11.7   - current Caddy 2.x stable at authoring time
 # The api/migrate images are built locally from the pinned Dockerfile; the 1.0.0
 # tag is an application release tag, not a floating upstream tag.
 
@@ -114,11 +119,13 @@ services:
     networks:
       - backend
       - frontend
-    # Reachable by Caddy on the frontend network; no host port is published.
-    expose:
-      - "${PORT:-8080}"
+    # Loopback-only host binding. The host's existing nginx is the sole public
+    # front door; nothing is exposed on 0.0.0.0. API_HOST_PORT only changes the
+    # loopback port, not the public surface.
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8080}:${PORT:-8080}"
     healthcheck:
-      # /readyz pings PostgreSQL, so an unready API is not routed to by Caddy.
+      # /readyz pings PostgreSQL, so an unready API is not proxied to by nginx.
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${PORT}/readyz >/dev/null"]
       interval: 15s
       timeout: 5s
@@ -131,47 +138,12 @@ services:
           cpus: "1.0"
           memory: 512m
 
-  caddy:
-    image: caddy:2.11.7
-    restart: unless-stopped
-    # Caddy sees the public-edge settings only, never database credentials.
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
-      PORT: ${PORT:-8080}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - frontend
-    healthcheck:
-      test: ["CMD", "caddy", "version"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    logging: *default-logging
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 128m
-
 networks:
   # No route to the outside world; db lives here only.
   backend:
     internal: true
-  # Caddy <-> api edge.
+  # Non-internal edge for api; needed for a reliable loopback publish.
   frontend:
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:

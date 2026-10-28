@@ -1,7 +1,7 @@
 // Package deploy contains static deployment guards.
 //
 // These tests do not build or run containers. They parse the Dockerfile (and,
-// in compose_test.go, the Compose/Caddy files) and fail when a property the
+// in compose_test.go and nginx_test.go, the Compose/nginx files) and fail when a property the
 // operations review depends on is lost: pinned images, a multi-stage build, a
 // static server binary, a non-root runtime user and secret-free build context.
 // Container build/run validation must happen in CI or on the deployment host.
