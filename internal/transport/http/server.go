@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"family-budget/internal/application"
 	"family-budget/internal/auth"
 	"family-budget/internal/config"
 	"family-budget/internal/ports"
@@ -30,6 +31,10 @@ type Dependencies struct {
 	// Auth is the authentication service. When nil, auth routes are not
 	// registered; the skeleton (health-only) remains usable for tests.
 	Auth *auth.Service
+
+	// App is the household/ledger application service. When nil, resource
+	// routes are not registered, so health/auth-only tests remain usable.
+	App *application.Service
 
 	// AuthRateLimiter overrides the limiter built from Config.Auth. It exists
 	// for tests and for deployments that share one limiter across servers.
@@ -61,6 +66,7 @@ func NewServer(deps Dependencies) (*Server, error) {
 	mux.HandleFunc("GET /readyz", server.handleReadyz)
 	mux.HandleFunc("GET /api/v1/health", server.handleAPIVersionHealth)
 	server.registerAuthRoutes(mux)
+	server.registerResourceRoutes(mux)
 
 	// Catch-all so unknown paths use the API error envelope instead of
 	// net/http's plain-text 404.

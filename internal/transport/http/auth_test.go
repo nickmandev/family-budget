@@ -177,12 +177,16 @@ func (r *memorySessions) storesRawToken(raw string) bool {
 }
 
 type memoryMemberships struct {
-	mu     sync.Mutex
-	byUser map[domain.UserId][]ports.UserMembershipRecord
+	mu          sync.Mutex
+	byUser      map[domain.UserId][]ports.UserMembershipRecord
+	byHousehold map[domain.HouseholdId]map[domain.UserId]ports.MembershipRecord
 }
 
 func newMemoryMemberships() *memoryMemberships {
-	return &memoryMemberships{byUser: make(map[domain.UserId][]ports.UserMembershipRecord)}
+	return &memoryMemberships{
+		byUser:      make(map[domain.UserId][]ports.UserMembershipRecord),
+		byHousehold: make(map[domain.HouseholdId]map[domain.UserId]ports.MembershipRecord),
+	}
 }
 
 func (r *memoryMemberships) set(user domain.UserId, record ports.UserMembershipRecord) {
@@ -191,16 +195,41 @@ func (r *memoryMemberships) set(user domain.UserId, record ports.UserMembershipR
 	r.byUser[user] = append(r.byUser[user], record)
 }
 
-func (r *memoryMemberships) Add(context.Context, domain.HouseholdId, ports.MembershipRecord) error {
+func (r *memoryMemberships) Add(_ context.Context, household domain.HouseholdId, record ports.MembershipRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byHousehold[household] == nil {
+		r.byHousehold[household] = make(map[domain.UserId]ports.MembershipRecord)
+	}
+	r.byHousehold[household][record.UserID] = record
+	r.byUser[record.UserID] = append(r.byUser[record.UserID], ports.UserMembershipRecord{
+		HouseholdID: household,
+		Role:        record.Role,
+		Status:      record.Status,
+		JoinedAt:    record.JoinedAt,
+		RemovedAt:   record.RemovedAt,
+	})
 	return nil
 }
 
-func (r *memoryMemberships) Get(context.Context, domain.HouseholdId, domain.UserId) (ports.MembershipRecord, error) {
-	return ports.MembershipRecord{}, domain.ErrEntityNotFoundOrNotInHousehold
+func (r *memoryMemberships) Get(_ context.Context, household domain.HouseholdId, user domain.UserId) (ports.MembershipRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, ok := r.byHousehold[household][user]
+	if !ok {
+		return ports.MembershipRecord{}, domain.ErrEntityNotFoundOrNotInHousehold
+	}
+	return record, nil
 }
 
-func (r *memoryMemberships) List(context.Context, domain.HouseholdId) ([]ports.MembershipRecord, error) {
-	return nil, nil
+func (r *memoryMemberships) List(_ context.Context, household domain.HouseholdId) ([]ports.MembershipRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	records := make([]ports.MembershipRecord, 0, len(r.byHousehold[household]))
+	for _, record := range r.byHousehold[household] {
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 func (r *memoryMemberships) ListForUser(_ context.Context, user domain.UserId) ([]ports.UserMembershipRecord, error) {
@@ -212,7 +241,21 @@ func (r *memoryMemberships) ListForUser(_ context.Context, user domain.UserId) (
 	return out, nil
 }
 
-func (r *memoryMemberships) Save(context.Context, domain.HouseholdId, ports.MembershipRecord) error {
+func (r *memoryMemberships) Save(_ context.Context, household domain.HouseholdId, record ports.MembershipRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byHousehold[household][record.UserID]; !ok {
+		return domain.ErrEntityNotFoundOrNotInHousehold
+	}
+	r.byHousehold[household][record.UserID] = record
+	projections := r.byUser[record.UserID]
+	for i := range projections {
+		if projections[i].HouseholdID == household {
+			projections[i].Status = record.Status
+			projections[i].RemovedAt = record.RemovedAt
+		}
+	}
+	r.byUser[record.UserID] = projections
 	return nil
 }
 
