@@ -170,16 +170,28 @@ go test ./deploy/...
 They run in `go test ./...`. Actual image build and stack startup must be
 validated in CI or on the deployment host, where a Docker daemon is available.
 
-## TODO — backups and recovery (next task)
+## Operations
 
-- [ ] Choose the encrypted off-host backup target and failure domain.
-- [ ] Document the database-aware backup command and schedule.
-- [ ] Define retention, encryption-key custody, RPO and RTO.
-- [ ] Document and rehearse restore to a clean host/database.
-- [ ] Add backup-freshness and disk-capacity alerting.
+Day-to-day backup, restore, retention, alerting and incident procedures live
+in [`RUNBOOK.md`](RUNBOOK.md). That runbook records the selected defaults:
+`pg_dump -Fc` inside the `db` container, `age` encryption before transfer,
+rsync over SSH to a Hetzner Storage Box, 6-hourly cadence, count-based
+retention, proposed RPO/RTO and the mandatory restore drill.
 
-## TODO — monitoring (next task)
+The supporting scripts are:
 
-- [ ] Alert on `db`/`api` health failures and restart loops.
-- [ ] Alert on disk capacity and stale backups.
-- [ ] Decide whether a staging environment is warranted.
+```sh
+scripts/backup.sh --help           # encrypted dump + off-host upload
+scripts/restore.sh --help          # clean restore, migrations, API start
+scripts/verify-restore.sh --help   # connectivity/schema/consistency/readiness
+```
+
+- **Backups and recovery:** see [`RUNBOOK.md`](RUNBOOK.md) §1–§4. The TODO list
+  that used to live here (target, schedule, retention, key custody, RPO/RTO,
+  restore rehearsal, backup alerting) is resolved there.
+- **Monitoring and alerting:** see [`RUNBOOK.md`](RUNBOOK.md) §5. Backup
+  failure, stale-backup age, low disk and `/readyz` checks are covered by the
+  proposed healthchecks.io + systemd timer setup.
+- **Staging:** still open. Until a staging environment exists, use an isolated
+  directory/stack on the VPS (or a fresh VPS) for restore drills, as described
+  in the runbook.
