@@ -1,0 +1,30 @@
+# Build context hygiene. Keep everything the Go build and migrations need:
+# go.mod, go.sum, cmd/, internal/, migrations/.
+
+.git
+.github
+.gitignore
+
+# Deployment secrets must never enter the build context or image layers.
+.env
+.env.*
+!.env.example
+
+# Developer and test noise.
+.idea
+.vscode
+.DS_Store
+*.test
+*.out
+coverage*
+/bin/
+/tmp/
+
+# Documentation and the deployment descriptors are not needed to compile.
+docs
+*.md
+deploy
+docker-compose.yml
+compose.yaml
+Caddyfile
+Dockerfile
