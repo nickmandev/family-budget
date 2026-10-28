@@ -24,6 +24,17 @@ import (
 func testStore(t *testing.T) *Store {
 	t.Helper()
 
+	store := testStoreWithoutMigration(t)
+	applyMigration(t, store.DB())
+	return store
+}
+
+// testStoreWithoutMigration returns an empty disposable schema. The migration
+// test uses it to apply the ordered migration set itself, including Gooselike
+// version tracking.
+func testStoreWithoutMigration(t *testing.T) *Store {
+	t.Helper()
+
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = os.Getenv("DATABASE_URL")
@@ -62,7 +73,6 @@ func testStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = storeSQL.Close() })
 
-	applyMigration(t, store.DB())
 	return store
 }
 
@@ -94,13 +104,17 @@ func withSearchPath(dsn, schema string) string {
 	return strings.TrimSpace(dsn) + " search_path=" + schema
 }
 
-// applyMigration executes the Goose Up section of the reviewed migration. The
-// schema is the authority, so the test runs the real SQL rather than GORM
-// AutoMigrate.
-func applyMigration(t *testing.T, db *gorm.DB) {
+// migrationDirectory returns the repository migrations directory relative to
+// this package's test working directory.
+func migrationDirectory() string {
+	return filepath.Join("..", "..", "..", "migrations")
+}
+
+// readMigrationUp returns the Up section of one reviewed migration file.
+func readMigrationUp(t *testing.T, name string) string {
 	t.Helper()
 
-	path := filepath.Join("..", "..", "..", "migrations", "0001_initial_schema.sql")
+	path := filepath.Join(migrationDirectory(), name)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read migration %s: %v", path, err)
@@ -111,7 +125,20 @@ func applyMigration(t *testing.T, db *gorm.DB) {
 	if upStart < 0 || downStart < 0 || downStart < upStart {
 		t.Fatalf("migration %s is missing Goose sections", path)
 	}
-	up := raw[upStart+len("-- +goose Up") : downStart]
+	return raw[upStart+len("-- +goose Up") : downStart]
+}
+
+// applyMigration executes the Goose Up section of the reviewed migration. The
+// schema is the authority, so the test runs the real SQL rather than GORM
+// AutoMigrate.
+func applyMigration(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	executeMigrationUp(t, db, readMigrationUp(t, "0001_initial_schema.sql"))
+}
+
+// executeMigrationUp runs every semicolon-separated statement of an Up section.
+func executeMigrationUp(t *testing.T, db *gorm.DB, up string) {
+	t.Helper()
 
 	for _, statement := range strings.Split(up, ";") {
 		if strings.TrimSpace(statement) == "" {
