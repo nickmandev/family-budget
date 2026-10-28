@@ -1,0 +1,3353 @@
+openapi: 3.0.3
+info:
+  title: Family Budget API
+  version: 1.0.0
+  description: |
+    Reviewable external HTTP contract for the household envelope-budgeting MVP.
+
+    This document is the reviewed API contract required by
+    `docs/API_CONTRACT.md`, `docs/MVP_SCOPE.md` quality gate 5 and
+    `docs/PLATFORM_DECISIONS.md` §C. The API is a versioned REST/JSON surface
+    under `/api/v1`; the OpenAPI server URL below carries that prefix and path
+    keys are relative to it. Operational probes (`/healthz`, `/readyz`) are
+    documented with a root server because they are outside the versioned API.
+
+    ## Date semantics
+
+    `EffectiveDate` is a date-only calendar fact in the household's timezone,
+    encoded as `YYYY-MM-DD` (`format: date`). It is never obtained by converting
+    an audit instant. Audit timestamps (`created_at`, `updated_at`, `joined_at`,
+    `removed_at`, `committed_at`, `expires_at`) are RFC 3339 UTC instants
+    (`format: date-time`). Clients must send and interpret them as instants, not
+    local wall-clock values.
+
+    ## Authentication and household scope
+
+    All API operations except registration and login require a bearer session
+    token (`Authorization: Bearer <token>`). Registration creates only the
+    global user identity; the first household is created through
+    `POST /households`, which makes the caller its OWNER. Every household-scoped
+    operation authorizes membership server-side. A caller who is not an active
+    member receives `404 ENTITY_NOT_FOUND_OR_NOT_IN_HOUSEHOLD`, not 403, so
+    cross-household existence is not disclosed. `HOUSEHOLD_ACCESS_DENIED` (403)
+    is reserved for a known member attempting an owner-only operation.
+
+    ## Idempotency
+
+    Every financial mutation requires an `Idempotency-Key` request header. The
+    key is scoped to `(household_id, idempotency_key)` and the request
+    fingerprint is the SHA-256 of
+    `METHOD + " " + EscapedPath + "\n" + canonicalJSON`. Reusing a key with the
+    same canonical request returns the original semantic outcome without
+    repeating ledger postings. Reusing it with a different canonical request
+    returns `409 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`. A concurrent duplicate is
+    serialized by the database; one request commits and the other observes the
+    stored outcome or a retryable `409 CONCURRENCY_CONFLICT`. Idempotency state
+    is durable and is never held only in process memory.
+
+    ## Pagination
+
+    Potentially unbounded collections use opaque cursor pagination. Ordering is
+    deterministic by `(committed_at, operation UUID)`; the cursor is a
+    base64url-encoded position that must be treated as opaque. `limit` defaults
+    to 50 and is capped at 200. `next_cursor` is `null` on the final page.
+    Cursors are authorized inside the household and cannot read another
+    household's data. Only the transaction history and other list responses
+    expose `next_cursor`; small bounded collections return it as `null`.
+
+    ## Draft, reserved plan, suggestion and committed transaction
+
+    A **suggestion** is an unconfirmed candidate (manual draft or future
+    notification-derived candidate). It has no ledger postings and no
+    reservations. Confirming a suggestion records the candidate; confirmation
+    as an already-completed external transaction creates a committed operation.
+    A **purchase plan** in `DRAFT` is freely editable and holds no funds. After
+    `authorize` it becomes `RESERVED` (or `RESERVED_EXCEPTION` for a reasoned
+    emergency override) and holds envelope and/or account funds without posting
+    an expense. `complete` commits exactly one purchase operation and releases
+    the holds; `cancel` releases the holds and posts nothing. A **committed
+    transaction** is an immutable journal operation created by income, purchase,
+    payment, fee, transfer, refund, reversal, correction or reconciliation
+    endpoints. Only the server creates postings; clients cannot post arbitrary
+    ledger rows.
+
+    ## Error envelope
+
+    Every error response uses the shape `{"error":{"code","message","field",
+    "details","request_id"}}`. Codes are stable and independent of the HTTP
+    status; the root `x-error-codes` extension records the code→status mapping
+    enforced by the transport. `X-Request-ID` is echoed on every response and
+    appears in each error envelope.
+servers:
+  - url: /api/v1
+    description: Versioned API root
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+    description: Registration, login, logout and the authenticated principal.
+  - name: Households
+    description: Household bootstrap, members and household settings.
+  - name: Budget
+    description: Accounts, envelopes, allocations, reallocations and derived balances.
+  - name: Transactions
+    description: Committed journal operations and budget resolution.
+  - name: Plans
+    description: Planned purchases and repayments with reservations.
+  - name: Suggestions
+    description: Unconfirmed candidate transactions and their transitions.
+  - name: Health
+    description: Liveness and readiness probes.
+x-error-codes:
+  BAD_REQUEST: 400
+  UNAUTHENTICATED: 401
+  INVALID_CREDENTIALS: 401
+  HOUSEHOLD_ACCESS_DENIED: 403
+  EMAIL_ALREADY_REGISTERED: 409
+  ENTITY_NOT_FOUND_OR_NOT_IN_HOUSEHOLD: 404
+  NOT_FOUND: 404
+  METHOD_NOT_ALLOWED: 405
+  INVALID_ENTITY_STATE: 409
+  INVALID_AMOUNT: 400
+  CURRENCY_MISMATCH: 400
+  INSUFFICIENT_READY_TO_ASSIGN: 422
+  INSUFFICIENT_ENVELOPE_FUNDS: 422
+  INSUFFICIENT_ACCOUNT_FUNDS: 422
+  OVERRIDE_REASON_REQUIRED: 400
+  RESERVATION_MISMATCH: 409
+  AMOUNT_EXCEEDS_AUTHORIZATION: 422
+  REFUND_EXCEEDS_REMAINDER: 422
+  REVERSAL_EXCEEDS_REMAINDER: 422
+  IDEMPOTENCY_KEY_PAYLOAD_MISMATCH: 409
+  CONCURRENCY_CONFLICT: 409
+  ACCOUNT_SCOPE_CHANGE_REQUIRES_FUNDING_PLAN: 422
+  ACCOUNTING_INVARIANT_VIOLATION: 500
+  MONEY_OVERFLOW: 422
+  AMOUNT_OUT_OF_RANGE: 422
+  INVALID_VALUE: 400
+  RATE_LIMITED: 429
+  PAYLOAD_TOO_LARGE: 413
+  REQUEST_TIMEOUT: 504
+  SERVICE_UNAVAILABLE: 503
+  INTERNAL_ERROR: 500
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Register a global user identity
+      description: |
+        Creates only the global user. Registration is rate limited. The first
+        household is created separately with `POST /households`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Log in and obtain a bearer session token
+      description: |
+        Returns a session token and its expiry instant. Failures are generic
+        (`401 INVALID_CREDENTIALS`) for an unknown email and a wrong password
+        alike. The response is not cacheable.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated session.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            Cache-Control:
+              description: Always `no-store` for credential responses.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke the presented session
+      description: Revokes only the bearer session used for this request.
+      responses:
+        '204':
+          description: Session revoked.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Return the authenticated user and memberships
+      responses:
+        '200':
+          description: Current principal.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households:
+    get:
+      tags: [Households]
+      operationId: listHouseholds
+      summary: List households the caller belongs to
+      responses:
+        '200':
+          description: Households visible to the caller.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HouseholdListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Households]
+      operationId: createHousehold
+      summary: Create a household and make the caller its OWNER
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateHouseholdRequest'
+      responses:
+        '201':
+          description: Household created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HouseholdResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Households]
+      operationId: getHousehold
+      summary: Get one household
+      description: Non-membership is reported as 404, never 403.
+      responses:
+        '200':
+          description: Household.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HouseholdResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/members:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Households]
+      operationId: listMembers
+      summary: List household members
+      responses:
+        '200':
+          description: Members.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Households]
+      operationId: addMember
+      summary: Add an existing user to the household
+      description: Owner-only. The email must belong to an existing user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '201':
+          description: Membership created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/members/{userID}:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/UserID'
+    delete:
+      tags: [Households]
+      operationId: removeMember
+      summary: Remove a household member
+      description: Owner-only. Removes membership while preserving audit history.
+      responses:
+        '200':
+          description: Membership removed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/accounts:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Budget]
+      operationId: listAccounts
+      summary: List accounts
+      parameters:
+        - name: include_archived
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Accounts.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Budget]
+      operationId: createAccount
+      summary: Create an account with no balance
+      description: |
+        Accounts start at zero; establish the opening balance with
+        `POST /households/{id}/accounts/{accountID}/opening-balance`. A credit
+        card liability cannot be budget eligible.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        '201':
+          description: Account created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/accounts/{accountID}:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/AccountID'
+    patch:
+      tags: [Budget]
+      operationId: updateAccount
+      summary: Update an account's name, lifecycle status or budget eligibility
+      description: |
+        Changing whether an account contributes budgetable cash requires an
+        explicit funding plan when it would invalidate the budget identity;
+        otherwise it returns `422 ACCOUNT_SCOPE_CHANGE_REQUIRES_FUNDING_PLAN`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountRequest'
+      responses:
+        '200':
+          description: Account updated.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/accounts/{accountID}/opening-balance:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/AccountID'
+    post:
+      tags: [Budget]
+      operationId: recordOpeningBalance
+      summary: Record an account opening balance
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Client-generated key scoped to `(household_id, idempotency_key)`.
+            Same key and same canonical request returns the original operation;
+            same key with a different request returns
+            `409 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpeningBalanceRequest'
+      responses:
+        '201':
+          description: Opening balance operation committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/envelopes:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Budget]
+      operationId: listEnvelopes
+      summary: List envelopes
+      parameters:
+        - name: include_archived
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Envelopes.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvelopeListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Budget]
+      operationId: createEnvelope
+      summary: Create an envelope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEnvelopeRequest'
+      responses:
+        '201':
+          description: Envelope created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvelopeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/envelopes/{envelopeID}:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/EnvelopeID'
+    patch:
+      tags: [Budget]
+      operationId: updateEnvelope
+      summary: Update an envelope's name or lifecycle status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEnvelopeRequest'
+      responses:
+        '200':
+          description: Envelope updated.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvelopeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/allocations:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Budget]
+      operationId: allocateFunds
+      summary: Allocate ready-to-assign money into an envelope
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllocationRequest'
+      responses:
+        '201':
+          description: Allocation committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/reallocations:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Budget]
+      operationId: reallocateFunds
+      summary: Move budget value between envelopes
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReallocationRequest'
+      responses:
+        '201':
+          description: Reallocation committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/balances:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Budget]
+      operationId: getBalances
+      summary: Derive current balances and budget resolution
+      description: |
+        All balances are derived from the append-only journal. The identity
+        `budgetable_cash = ready_to_assign + sum(envelope balances)` holds for
+        every valid accounting state.
+      responses:
+        '200':
+          description: Derived balances.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalancesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Transactions]
+      operationId: listTransactions
+      summary: List committed journal operations with cursor pagination
+      description: |
+        Returns committed operations only — never suggestions, draft plans or
+        reserved plans. Ordering is `(committed_at, id)` ascending. The cursor
+        is opaque and cannot escape the household.
+      parameters:
+        - name: type
+          in: query
+          description: Repeat or comma-separate to filter by operation type.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/OperationType'
+        - name: source
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionSource'
+        - name: from
+          in: query
+          description: Inclusive effective-date lower bound in household-local `YYYY-MM-DD`.
+          schema:
+            $ref: '#/components/schemas/EffectiveDate'
+        - name: to
+          in: query
+          description: Inclusive effective-date upper bound in household-local `YYYY-MM-DD`.
+          schema:
+            $ref: '#/components/schemas/EffectiveDate'
+        - name: limit
+          in: query
+          description: Page size. Defaults to 50; values above 200 are capped.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          description: Opaque cursor from a previous page's `next_cursor`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of committed operations.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/income:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordIncome
+      summary: Record received income
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncomeRequest'
+      responses:
+        '201':
+          description: Income committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/purchases:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordPurchase
+      summary: Record a debit, cash or credit-card purchase
+      description: |
+        Debit/cash purchases require `account_id` and `envelope_id`. Card
+        purchases require `card_account_id`, `envelope_id` (spending envelope)
+        and `payment_envelope_id`; `purchase_kind: CARD` may be supplied to
+        disambiguate. Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseRequest'
+      responses:
+        '201':
+          description: Purchase committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/card-payments:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordCardPayment
+      summary: Record a credit-card repayment
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardPaymentRequest'
+      responses:
+        '201':
+          description: Card payment committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/card-fees:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordCardFee
+      summary: Record a credit-card fee or interest charge
+      description: Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardFeeRequest'
+      responses:
+        '201':
+          description: Card fee committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/transfers:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordTransfer
+      summary: Transfer value between accounts
+      description: |
+        Moving money out of budget scope may require a `funding` plan; without
+        one the request can fail with
+        `422 ACCOUNT_SCOPE_CHANGE_REQUIRES_FUNDING_PLAN`. Financial mutation;
+        requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '201':
+          description: Transfer committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/refunds:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordRefund
+      summary: Refund all or part of an earlier purchase
+      description: |
+        A cash refund supplies `account_id` and `envelope_id`; a card refund
+        supplies `card_account_id`, `envelope_id` and `payment_envelope_id`.
+        The amount may not exceed the refundable remainder. Financial mutation;
+        requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '201':
+          description: Refund committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/reversals:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: recordReversal
+      summary: Reverse all or part of an earlier committed operation
+      description: |
+        The amount may not exceed the reversible remainder. A reason is
+        required in the request body. Financial mutation; requires
+        `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReversalRequest'
+      responses:
+        '201':
+          description: Reversal committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/corrections:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: correctOperation
+      summary: Correct a committed operation
+      description: |
+        `kind` selects a transaction, category or metadata correction. A
+        category correction supplies `original_envelope_id` and
+        `corrected_envelope_id`; a transaction correction may supply a
+        `replacement` purchase. Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorrectionRequest'
+      responses:
+        '201':
+          description: Correction committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/transactions/reconciliations:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: reconcileAccount
+      summary: Reconcile an account to an external balance
+      description: |
+        Records an increase or decrease with an optional `funding` plan. A
+        reason is required in the request body. Financial mutation; requires
+        `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconciliationRequest'
+      responses:
+        '201':
+          description: Reconciliation committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/resolution:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Transactions]
+      operationId: getResolution
+      summary: Report the derived budget-resolution state
+      description: |
+        Deficits are genuinely recorded funding gaps, never internal
+        invariant failures. `REQUIRES_RESOLUTION` means at least one visible
+        deficit exists.
+      responses:
+        '200':
+          description: Resolution state and deficits.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolutionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Plans]
+      operationId: listPlans
+      summary: List purchase and repayment plans
+      responses:
+        '200':
+          description: Plans.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Plans]
+      operationId: createPlan
+      summary: Create a draft purchase or repayment plan
+      description: |
+        The plan starts in `DRAFT` and holds no funds. It is not a committed
+        transaction and does not reserve money until authorized.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlanRequest'
+      responses:
+        '201':
+          description: Draft plan created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans/{planID}:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/PlanID'
+    get:
+      tags: [Plans]
+      operationId: getPlan
+      summary: Get one plan
+      responses:
+        '200':
+          description: Plan.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans/{planID}/authorize:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/PlanID'
+    post:
+      tags: [Plans]
+      operationId: authorizePlan
+      summary: Authorize a plan and reserve its funds
+      description: |
+        Moves a draft to `RESERVED`, or to `RESERVED_EXCEPTION` for an
+        emergency override with a required reason. Authorization does not post
+        an expense; it creates reservation holds. Financial mutation; requires
+        `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizePlanRequest'
+      responses:
+        '200':
+          description: Plan authorized; reservation operation returned.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans/{planID}/resize:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/PlanID'
+    post:
+      tags: [Plans]
+      operationId: resizePlan
+      summary: Resize a reserved plan
+      description: |
+        Adjusts the reservation hold. Emergency resize requires an override
+        reason. Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResizePlanRequest'
+      responses:
+        '200':
+          description: Plan resized; reservation operation returned.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans/{planID}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/PlanID'
+    post:
+      tags: [Plans]
+      operationId: cancelPlan
+      summary: Cancel a plan and release its holds
+      description: |
+        Cancellation posts nothing and releases all reservation holds. The
+        returned operation is `null` when there was no hold to release.
+        Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelPlanRequest'
+      responses:
+        '200':
+          description: Plan cancelled.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanCancelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/plans/{planID}/complete:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/PlanID'
+    post:
+      tags: [Plans]
+      operationId: completePlan
+      summary: Complete a reserved plan as a committed transaction
+      description: |
+        Posts exactly one purchase or repayment operation, releases the holds
+        and moves the plan to `COMPLETED`. Financial mutation; requires
+        `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletePlanRequest'
+      responses:
+        '200':
+          description: Plan completed and purchase committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/suggestions:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Suggestions]
+      operationId: listSuggestions
+      summary: List unconfirmed candidate transactions
+      description: |
+        Suggestions have no ledger postings and no reservations. They are not
+        committed transactions.
+      responses:
+        '200':
+          description: Suggestions.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Suggestions]
+      operationId: createSuggestion
+      summary: Create an unconfirmed suggestion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSuggestionRequest'
+      responses:
+        '201':
+          description: Suggestion created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/suggestions/{suggestionID}/edit:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/SuggestionID'
+    post:
+      tags: [Suggestions]
+      operationId: editSuggestion
+      summary: Edit an unconfirmed suggestion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditSuggestionRequest'
+      responses:
+        '200':
+          description: Suggestion edited.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/suggestions/{suggestionID}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/SuggestionID'
+    post:
+      tags: [Suggestions]
+      operationId: cancelSuggestion
+      summary: Dismiss a suggestion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelSuggestionRequest'
+      responses:
+        '200':
+          description: Suggestion cancelled.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/suggestions/{suggestionID}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/SuggestionID'
+    post:
+      tags: [Suggestions]
+      operationId: confirmSuggestion
+      summary: Confirm a suggestion as an already-completed external transaction
+      description: |
+        Confirmation records the externally completed purchase as one committed
+        operation and does not pretend the client authorized the real-world
+        payment. Financial mutation; requires `Idempotency-Key`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: See the idempotency semantics in the API description.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmSuggestionRequest'
+      responses:
+        '200':
+          description: Suggestion confirmed and operation committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionConfirmResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/suggestions/{suggestionID}/convert:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+      - $ref: '#/components/parameters/SuggestionID'
+    post:
+      tags: [Suggestions]
+      operationId: convertSuggestion
+      summary: Convert a suggestion into a draft plan
+      description: |
+        The resulting plan is a `DRAFT` and has not reserved or committed
+        anything. It must still be authorized and completed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConvertSuggestionRequest'
+      responses:
+        '200':
+          description: Suggestion converted; draft plan returned.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionConvertResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /health:
+    get:
+      tags: [Health]
+      operationId: apiHealth
+      summary: Versioned API health check
+      security: []
+      responses:
+        '200':
+          description: API stack is serving.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /healthz:
+    servers:
+      - url: /
+        description: Process root (outside the versioned API)
+    get:
+      tags: [Health]
+      operationId: liveness
+      summary: Liveness probe
+      description: Process can serve HTTP; does not touch the database.
+      security: []
+      responses:
+        '200':
+          description: Alive.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    servers:
+      - url: /
+        description: Process root (outside the versioned API)
+    get:
+      tags: [Health]
+      operationId: readiness
+      summary: Readiness probe
+      description: |
+        Reports ready only when the database connectivity check succeeds within
+        the probe timeout. Failures are generic and never expose the driver
+        error.
+      security: []
+      responses:
+        '200':
+          description: Ready to receive traffic.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: session-token
+      description: |
+        Opaque session token returned by `POST /auth/login`. Send it as
+        `Authorization: Bearer <token>`. Tokens expire and can be individually
+        revoked; they are never logged or stored in plaintext.
+  parameters:
+    HouseholdID:
+      name: id
+      in: path
+      required: true
+      description: Household UUID.
+      schema:
+        type: string
+        format: uuid
+    UserID:
+      name: userID
+      in: path
+      required: true
+      description: User UUID.
+      schema:
+        type: string
+        format: uuid
+    AccountID:
+      name: accountID
+      in: path
+      required: true
+      description: Account UUID.
+      schema:
+        type: string
+        format: uuid
+    EnvelopeID:
+      name: envelopeID
+      in: path
+      required: true
+      description: Envelope UUID.
+      schema:
+        type: string
+        format: uuid
+    PlanID:
+      name: planID
+      in: path
+      required: true
+      description: Plan UUID.
+      schema:
+        type: string
+        format: uuid
+    SuggestionID:
+      name: suggestionID
+      in: path
+      required: true
+      description: Suggestion UUID.
+      schema:
+        type: string
+        format: uuid
+  headers:
+    XRequestID:
+      description: |
+        Correlation id for this request. A well-formed inbound `X-Request-ID`
+        is propagated; otherwise the server generates one. The same value
+        appears in an error envelope's `request_id`.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Malformed request or an invalid value (400).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing, expired or revoked session (401).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        WWW-Authenticate:
+          description: Bearer challenge.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Authenticated but not permitted (403).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: |
+        Resource absent, or the caller is not an active household member. The
+        two cases are deliberately indistinguishable.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: |
+        State, idempotency or concurrency conflict (409).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    PayloadTooLarge:
+      description: Request body exceeds the configured limit (413).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UnprocessableEntity:
+      description: |
+        Well-formed but semantically unprocessable, such as insufficient
+        funds, an amount-limit breach or a disallowed account-scope change
+        (422).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooManyRequests:
+      description: Rate limit exceeded (429).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        Retry-After:
+          description: Seconds until the caller may retry.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: |
+        Internal failure (500). The response never exposes driver errors,
+        stack traces or secrets.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServiceUnavailable:
+      description: Service is not ready (503).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    GatewayTimeout:
+      description: Request exceeded the handler timeout (504).
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      description: The only error response shape the API returns.
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    ErrorDetail:
+      type: object
+      required: [code, message, field, details, request_id]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. The root `x-error-codes` extension is
+            the authoritative code→HTTP-status table.
+          enum:
+            - HOUSEHOLD_ACCESS_DENIED
+            - ENTITY_NOT_FOUND_OR_NOT_IN_HOUSEHOLD
+            - INVALID_ENTITY_STATE
+            - INVALID_AMOUNT
+            - CURRENCY_MISMATCH
+            - INSUFFICIENT_READY_TO_ASSIGN
+            - INSUFFICIENT_ENVELOPE_FUNDS
+            - INSUFFICIENT_ACCOUNT_FUNDS
+            - OVERRIDE_REASON_REQUIRED
+            - RESERVATION_MISMATCH
+            - AMOUNT_EXCEEDS_AUTHORIZATION
+            - REFUND_EXCEEDS_REMAINDER
+            - REVERSAL_EXCEEDS_REMAINDER
+            - IDEMPOTENCY_KEY_PAYLOAD_MISMATCH
+            - CONCURRENCY_CONFLICT
+            - ACCOUNT_SCOPE_CHANGE_REQUIRES_FUNDING_PLAN
+            - ACCOUNTING_INVARIANT_VIOLATION
+            - MONEY_OVERFLOW
+            - AMOUNT_OUT_OF_RANGE
+            - INVALID_VALUE
+            - BAD_REQUEST
+            - UNAUTHENTICATED
+            - INVALID_CREDENTIALS
+            - EMAIL_ALREADY_REGISTERED
+            - RATE_LIMITED
+            - PAYLOAD_TOO_LARGE
+            - REQUEST_TIMEOUT
+            - SERVICE_UNAVAILABLE
+            - NOT_FOUND
+            - METHOD_NOT_ALLOWED
+            - INTERNAL_ERROR
+        message:
+          type: string
+          description: Safe, user-facing message. Never contains internal detail.
+        field:
+          type: string
+          nullable: true
+          description: Offending request field, or null when not field-specific.
+        details:
+          nullable: true
+          description: Optional non-sensitive context, or null.
+        request_id:
+          type: string
+          description: Correlation id, also returned as `X-Request-ID`.
+    EffectiveDate:
+      type: string
+      format: date
+      description: |
+        Date-only calendar fact in the household timezone, `YYYY-MM-DD`. It is
+        never obtained by converting a UTC instant.
+      example: '2026-10-28'
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 UTC audit instant.
+      example: '2026-10-28T12:00:00Z'
+    CurrencyCode:
+      type: string
+      description: ISO-4217 code. The MVP uses one currency per household.
+      pattern: '^[A-Z]{3}$'
+      example: USD
+    MinorUnits:
+      type: integer
+      format: int64
+      description: |
+        Integer amount in the currency's minor units. Money is never a
+        floating-point value.
+    LifecycleStatus:
+      type: string
+      enum: [ACTIVE, ARCHIVED]
+    MembershipRole:
+      type: string
+      enum: [OWNER, MEMBER]
+    MembershipStatus:
+      type: string
+      enum: [ACTIVE, REMOVED]
+    AccountKind:
+      type: string
+      description: Static nature of an account.
+      enum: [CHECKING, SAVINGS, CASH_WALLET, CREDIT_CARD_LIABILITY]
+    PlanKind:
+      type: string
+      description: |
+        `PURCHASE` is a planned purchase; `REPAYMENT` is a planned card
+        repayment that settles a liability rather than creating a second
+        expense.
+      enum: [PURCHASE, REPAYMENT]
+    PlanState:
+      type: string
+      description: |
+        `DRAFT` holds no funds; `RESERVED` and `RESERVED_EXCEPTION` hold funds
+        without posting an expense; `COMPLETED` and `CANCELLED` are terminal.
+      enum: [DRAFT, RESERVED, RESERVED_EXCEPTION, COMPLETED, CANCELLED]
+    SuggestionState:
+      type: string
+      description: |
+        Suggestions have no ledger effect. `CONFIRMED` and `CANCELLED` are
+        terminal.
+      enum: [SUGGESTED, EDITED, CONFIRMED, CANCELLED]
+    OperationType:
+      type: string
+      description: Committed journal-operation type.
+      enum:
+        - OPENING_BALANCE
+        - INCOME
+        - REIMBURSEMENT
+        - ALLOCATE
+        - REALLOCATE
+        - DEBIT_PURCHASE
+        - CASH_PURCHASE
+        - CARD_PURCHASE
+        - CARD_PAYMENT
+        - CARD_FEE_INTEREST
+        - TRANSFER_ELIGIBLE
+        - TRANSFER_TO_ELIGIBLE
+        - TRANSFER_OUT_OF_SCOPE
+        - TRANSFER_EXCLUDED
+        - CASH_REFUND
+        - CARD_REFUND
+        - RESERVATION_CREATE
+        - RESERVATION_RESIZE
+        - RESERVATION_CANCEL
+        - PURCHASE_COMPLETE
+        - EXTERNAL_TRANSACTION
+        - REVERSAL
+        - REPLACEMENT
+        - CATEGORY_CORRECTION
+        - ACCOUNT_CORRECTION
+        - METADATA_CORRECTION
+        - RECONCILE_INCREASE
+        - RECONCILE_DECREASE
+    TransactionSource:
+      type: string
+      description: Provenance of a committed operation.
+      enum: [MANUAL, PLANNED_PURCHASE, EXTERNAL_ENTRY, OPENING_BALANCE, RECONCILIATION]
+    AuthorizationMode:
+      type: string
+      description: |
+        `EMERGENCY_OVERRIDE` bypasses the normal envelope funding check and
+        requires a nonblank reason, which is audited household-visibly.
+      enum: [NORMAL, EMERGENCY_OVERRIDE]
+    PurchaseKind:
+      type: string
+      description: Payment-method shape used to complete a plan.
+      enum: [DEBIT, CASH, CARD, REPAYMENT]
+    CorrectionKind:
+      type: string
+      enum: [TRANSACTION, CATEGORY, METADATA]
+    PostingKind:
+      type: string
+      enum: [ACCOUNT, ENVELOPE]
+    ResolutionStatus:
+      type: string
+      enum: [CLEAR, REQUIRES_RESOLUTION]
+    DeficitKind:
+      type: string
+      enum: [READY_TO_ASSIGN, ENVELOPE]
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    User:
+      type: object
+      required: [id, email, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    Membership:
+      type: object
+      description: Household membership as seen from the authenticated user.
+      required: [household_id, role, status, joined_at, removed_at]
+      properties:
+        household_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        status:
+          $ref: '#/components/schemas/MembershipStatus'
+        joined_at:
+          $ref: '#/components/schemas/Timestamp'
+        removed_at:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          nullable: true
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 1024
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    RegisterResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    LoginResponse:
+      type: object
+      required: [token, expires_at, user]
+      properties:
+        token:
+          type: string
+          description: Opaque bearer session token. Shown only once.
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        user:
+          $ref: '#/components/schemas/User'
+    MeResponse:
+      type: object
+      required: [user, memberships]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+    Household:
+      type: object
+      required: [id, name, currency, timezone, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        timezone:
+          type: string
+          description: IANA timezone used to interpret `EffectiveDate`.
+          example: Europe/London
+        status:
+          $ref: '#/components/schemas/LifecycleStatus'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+    CreateHouseholdRequest:
+      type: object
+      required: [name, currency, timezone]
+      properties:
+        name:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        timezone:
+          type: string
+          example: Europe/London
+    Member:
+      type: object
+      required: [user_id, role, status, joined_at, removed_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        status:
+          $ref: '#/components/schemas/MembershipStatus'
+        joined_at:
+          $ref: '#/components/schemas/Timestamp'
+        removed_at:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          nullable: true
+    AddMemberRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+    Account:
+      type: object
+      required: [id, name, kind, budget_eligible, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/AccountKind'
+        budget_eligible:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/LifecycleStatus'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+    CreateAccountRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/AccountKind'
+        budget_eligible:
+          type: boolean
+          default: true
+          description: Credit-card liabilities may not be budget eligible.
+    UpdateAccountRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/LifecycleStatus'
+        budget_eligible:
+          type: boolean
+    Envelope:
+      type: object
+      required: [id, name, status, linked_card_account_id, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/LifecycleStatus'
+        linked_card_account_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Card liability this envelope services as its payment envelope.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+    CreateEnvelopeRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        linked_card_account_id:
+          type: string
+          format: uuid
+          nullable: true
+    UpdateEnvelopeRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/LifecycleStatus'
+    FinancialRequest:
+      type: object
+      required: [effective_date]
+      properties:
+        effective_date:
+          $ref: '#/components/schemas/EffectiveDate'
+        reason:
+          type: string
+          maxLength: 500
+          description: |
+            Optional audit reason. Required for emergency overrides,
+            reversals, reconciliations and plan cancellation.
+    OpeningBalanceRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [delta_minor]
+          properties:
+            delta_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    AllocationRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [envelope_id, amount_minor]
+          properties:
+            envelope_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    ReallocationRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [source_envelope_id, destination_envelope_id, amount_minor]
+          properties:
+            source_envelope_id:
+              type: string
+              format: uuid
+            destination_envelope_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    IncomeRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [account_id, amount_minor]
+          properties:
+            account_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    PurchaseRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [envelope_id, amount_minor]
+          properties:
+            purchase_kind:
+              $ref: '#/components/schemas/PurchaseKind'
+            account_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Debit/cash account, or the card account as a fallback.
+            card_account_id:
+              type: string
+              format: uuid
+              nullable: true
+            envelope_id:
+              type: string
+              format: uuid
+              description: Spending envelope.
+            payment_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Card-payment envelope; required for card purchases.
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    CardPaymentRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [account_id, card_account_id, payment_envelope_id, amount_minor]
+          properties:
+            account_id:
+              type: string
+              format: uuid
+            card_account_id:
+              type: string
+              format: uuid
+            payment_envelope_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    CardFeeRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [card_account_id, fee_envelope_id, payment_envelope_id, amount_minor]
+          properties:
+            card_account_id:
+              type: string
+              format: uuid
+            fee_envelope_id:
+              type: string
+              format: uuid
+            payment_envelope_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    Funding:
+      type: object
+      description: |
+        Explicit funding plan for moving money out of budget scope. Without one,
+        a transfer or reconciliation that would break the budget identity is
+        rejected with `ACCOUNT_SCOPE_CHANGE_REQUIRES_FUNDING_PLAN`.
+      properties:
+        from_ready_minor:
+          type: integer
+          format: int64
+          nullable: true
+        envelopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvelopeFunding'
+    EnvelopeFunding:
+      type: object
+      required: [envelope_id, amount_minor]
+      properties:
+        envelope_id:
+          type: string
+          format: uuid
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    TransferRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [source_account_id, destination_account_id, amount_minor]
+          properties:
+            source_account_id:
+              type: string
+              format: uuid
+            destination_account_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+            funding:
+              allOf:
+                - $ref: '#/components/schemas/Funding'
+              nullable: true
+    RefundRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [original_operation_id, envelope_id, amount_minor]
+          properties:
+            original_operation_id:
+              type: string
+              format: uuid
+            account_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Cash account for a cash refund.
+            card_account_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Card liability for a card refund.
+            envelope_id:
+              type: string
+              format: uuid
+            payment_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    ReversalRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [original_operation_id, amount_minor, reason]
+          properties:
+            original_operation_id:
+              type: string
+              format: uuid
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+    ReplacementPurchase:
+      type: object
+      required: [purchase_kind, account_id, envelope_id, amount_minor]
+      properties:
+        purchase_kind:
+          $ref: '#/components/schemas/PurchaseKind'
+        account_id:
+          type: string
+          format: uuid
+        envelope_id:
+          type: string
+          format: uuid
+        payment_envelope_id:
+          type: string
+          format: uuid
+          nullable: true
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    CorrectionRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [kind, original_operation_id, amount_minor]
+          properties:
+            kind:
+              $ref: '#/components/schemas/CorrectionKind'
+            original_operation_id:
+              type: string
+              format: uuid
+            original_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+            corrected_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+            replacement:
+              allOf:
+                - $ref: '#/components/schemas/ReplacementPurchase'
+              nullable: true
+    ReconciliationRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [account_id, delta_minor, reason]
+          properties:
+            account_id:
+              type: string
+              format: uuid
+            delta_minor:
+              $ref: '#/components/schemas/MinorUnits'
+            funding:
+              allOf:
+                - $ref: '#/components/schemas/Funding'
+              nullable: true
+    Posting:
+      type: object
+      required: [kind, delta_minor]
+      properties:
+        kind:
+          $ref: '#/components/schemas/PostingKind'
+        account_id:
+          type: string
+          format: uuid
+          nullable: true
+        envelope_id:
+          type: string
+          format: uuid
+          nullable: true
+        delta_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    RelatedOperation:
+      type: object
+      required: [kind, operation_id]
+      properties:
+        kind:
+          type: string
+          description: Relationship such as `REVERSAL_OF` or `REFUND_OF`.
+        operation_id:
+          type: string
+          format: uuid
+    Transaction:
+      type: object
+      description: |
+        Immutable committed journal operation. `effective_date` is a household-
+        local calendar date; `committed_at` is an audit instant.
+      required: [id, type, source, effective_date, currency, amount_minor, actor_id, reason, committed_at, postings, related]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/OperationType'
+        source:
+          $ref: '#/components/schemas/TransactionSource'
+        effective_date:
+          $ref: '#/components/schemas/EffectiveDate'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+        actor_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          nullable: true
+        committed_at:
+          $ref: '#/components/schemas/Timestamp'
+        postings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Posting'
+        related:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelatedOperation'
+    AccountBalance:
+      type: object
+      required: [account_id, name, kind, posted_minor, spendable_minor, reserved_minor]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/AccountKind'
+        posted_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        spendable_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        reserved_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    EnvelopeBalance:
+      type: object
+      required: [envelope_id, name, balance_minor, reserved_minor, spendable_minor]
+      properties:
+        envelope_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        balance_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        reserved_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        spendable_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    Deficit:
+      type: object
+      required: [kind, envelope_id, amount_minor]
+      properties:
+        kind:
+          $ref: '#/components/schemas/DeficitKind'
+        envelope_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for a ready-to-assign deficit.
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    Balances:
+      type: object
+      required: [currency, budgetable_cash_minor, ready_to_assign_minor, resolution, accounts, envelopes, deficits]
+      properties:
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        budgetable_cash_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        ready_to_assign_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        resolution:
+          $ref: '#/components/schemas/ResolutionStatus'
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountBalance'
+        envelopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvelopeBalance'
+        deficits:
+          type: array
+          items:
+            $ref: '#/components/schemas/Deficit'
+    Resolution:
+      type: object
+      required: [resolution, deficits]
+      properties:
+        resolution:
+          $ref: '#/components/schemas/ResolutionStatus'
+        deficits:
+          type: array
+          items:
+            $ref: '#/components/schemas/Deficit'
+    Plan:
+      type: object
+      description: |
+        Planned purchase or repayment. A `DRAFT` holds no funds and is not a
+        committed transaction; `RESERVED`/`RESERVED_EXCEPTION` hold funds; only
+        `complete` creates a committed purchase operation.
+      required: [id, kind, state, target_envelope_id, intended_amount_minor, held_amount_minor, held_on_account_minor]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/PlanKind'
+        state:
+          $ref: '#/components/schemas/PlanState'
+        target_envelope_id:
+          type: string
+          format: uuid
+        target_account_id:
+          type: string
+          format: uuid
+          nullable: true
+        intended_amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        authorized_amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+        held_amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        held_on_account_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        mode:
+          allOf:
+            - $ref: '#/components/schemas/AuthorizationMode'
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+    CreatePlanRequest:
+      type: object
+      required: [kind, target_envelope_id, amount_minor]
+      properties:
+        kind:
+          $ref: '#/components/schemas/PlanKind'
+        target_envelope_id:
+          type: string
+          format: uuid
+        target_account_id:
+          type: string
+          format: uuid
+          nullable: true
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    PlanReallocation:
+      type: object
+      required: [source_envelope_id, amount_minor]
+      properties:
+        source_envelope_id:
+          type: string
+          format: uuid
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+    AuthorizePlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          properties:
+            mode:
+              $ref: '#/components/schemas/AuthorizationMode'
+            reallocation:
+              allOf:
+                - $ref: '#/components/schemas/PlanReallocation'
+              nullable: true
+    ResizePlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [amount_minor]
+          properties:
+            amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+            mode:
+              $ref: '#/components/schemas/AuthorizationMode'
+    CancelPlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [reason]
+          properties:
+            reason:
+              type: string
+              maxLength: 500
+    CompletePlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [final_amount_minor, purchase_kind]
+          properties:
+            final_amount_minor:
+              $ref: '#/components/schemas/MinorUnits'
+            purchase_kind:
+              $ref: '#/components/schemas/PurchaseKind'
+            card_account_id:
+              type: string
+              format: uuid
+              nullable: true
+            payment_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+    Suggestion:
+      type: object
+      description: |
+        Unconfirmed candidate transaction. It has no ledger postings and no
+        reservations; it is not a committed financial transaction.
+      required: [id, source, amount_minor, merchant, state, confirmation_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        source:
+          $ref: '#/components/schemas/TransactionSource'
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        merchant:
+          type: string
+        state:
+          $ref: '#/components/schemas/SuggestionState'
+        cancel_reason:
+          type: string
+          nullable: true
+        confirmation_count:
+          type: integer
+          minimum: 0
+    CreateSuggestionRequest:
+      type: object
+      required: [source, amount_minor, merchant]
+      properties:
+        source:
+          $ref: '#/components/schemas/TransactionSource'
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        merchant:
+          type: string
+    EditSuggestionRequest:
+      type: object
+      properties:
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        merchant:
+          type: string
+          nullable: true
+    CancelSuggestionRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+    ConfirmSuggestionRequest:
+      allOf:
+        - $ref: '#/components/schemas/FinancialRequest'
+        - type: object
+          required: [purchase_kind, account_id, envelope_id]
+          properties:
+            purchase_kind:
+              $ref: '#/components/schemas/PurchaseKind'
+            account_id:
+              type: string
+              format: uuid
+            envelope_id:
+              type: string
+              format: uuid
+            payment_envelope_id:
+              type: string
+              format: uuid
+              nullable: true
+    ConvertSuggestionRequest:
+      type: object
+      required: [kind, target_envelope_id]
+      properties:
+        kind:
+          $ref: '#/components/schemas/PlanKind'
+        target_envelope_id:
+          type: string
+          format: uuid
+        target_account_id:
+          type: string
+          format: uuid
+          nullable: true
+    HouseholdResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Household'
+    HouseholdListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Household'
+        next_cursor:
+          type: string
+          nullable: true
+    MemberResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Member'
+    MemberListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+        next_cursor:
+          type: string
+          nullable: true
+    AccountResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Account'
+    AccountListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
+        next_cursor:
+          type: string
+          nullable: true
+    EnvelopeResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Envelope'
+    EnvelopeListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Envelope'
+        next_cursor:
+          type: string
+          nullable: true
+    TransactionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Transaction'
+    TransactionListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        next_cursor:
+          type: string
+          nullable: true
+    BalancesResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Balances'
+    ResolutionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Resolution'
+    PlanResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Plan'
+    PlanListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plan'
+        next_cursor:
+          type: string
+          nullable: true
+    PlanActionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [plan, operation]
+          properties:
+            plan:
+              $ref: '#/components/schemas/Plan'
+            operation:
+              $ref: '#/components/schemas/Transaction'
+    PlanCancelResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [plan]
+          properties:
+            plan:
+              $ref: '#/components/schemas/Plan'
+            operation:
+              allOf:
+                - $ref: '#/components/schemas/Transaction'
+              nullable: true
+    SuggestionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Suggestion'
+    SuggestionListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Suggestion'
+        next_cursor:
+          type: string
+          nullable: true
+    SuggestionConfirmResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [suggestion, operation]
+          properties:
+            suggestion:
+              $ref: '#/components/schemas/Suggestion'
+            operation:
+              $ref: '#/components/schemas/Transaction'
+    SuggestionConvertResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [suggestion, plan]
+          properties:
+            suggestion:
+              $ref: '#/components/schemas/Suggestion'
+            plan:
+              $ref: '#/components/schemas/Plan'
