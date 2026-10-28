@@ -163,9 +163,92 @@ major upgrades require a dump/restore, not just a tag bump.
   the affected services (`docker compose up -d --force-recreate db api`).
   Rotating the PostgreSQL role password inside a running database is a planned
   operational step; do not assume editing `.env` changes it.
-- Resource limits (`deploy.resources.limits`): db 1 CPU / 1 GB, api 1 CPU /
-  512 MB, migrate 0.5 CPU / 256 MB. Adjust for the VPS size and watch for OOM
-  kills.
+- Resource limits (`deploy.resources.limits`): db 0.75 CPU / 768 MiB, api
+  0.75 CPU / 256 MiB, migrate 0.25 CPU / 256 MiB. These are ceilings, not
+  reservations; see [Resource footprint / sizing](#resource-footprint--sizing).
+
+## Resource footprint / sizing
+
+The stack shares a small Hetzner VPS with the host's existing nginx + Let's
+Encrypt, a Calibre instance and other projects. The numbers below assume roughly
+**4 vCPU and 8–16 GB RAM** for the whole host, with a meaningful share left for
+those other services. They are deliberate **starting points**; adjust after
+observing real load (see [What to monitor](#what-to-monitor)).
+
+### Per-service ceilings
+
+| Service | CPU limit | Memory limit | Why |
+|---------|-----------|--------------|-----|
+| `db` | 0.75 | 768 MiB | 128 MiB `shared_buffers`, up to 3 autovacuum workers with 64 MiB `maintenance_work_mem`, 25 backends and WAL/OS overhead fit under 768 MiB. |
+| `api` | 0.75 | 256 MiB | Static Go binary (~20 MiB), bounded request buffers and one 64 MiB Argon2id hash. `GOMEMLIMIT=192MiB` makes the Go GC collect before the container limit. |
+| `migrate` | 0.25 | 256 MiB | One-shot Goose run; transient only, exits before `api` starts. |
+
+At full tilt the Compose services can consume at most **1.75 vCPU** and
+**1.25 GiB** of RAM, leaving the rest of a 4 vCPU / 8 GB box for nginx, Calibre,
+the OS page cache and other projects. In practice they are nowhere near those
+ceilings:
+
+- `db`: roughly **250–450 MiB RSS** at steady state for a household-sized
+  dataset (128 MiB shared buffers dominate), with short spikes during
+  autovacuum or a checkpoint.
+- `api`: roughly **25–80 MiB RSS** at idle to light load, with a transient
+  ~64 MiB bump per concurrent Argon2id login.
+- `migrate`: **0 MiB** at rest; ~20–50 MiB while applying migrations.
+- Whole stack at rest: **≈300–550 MiB**, usually under 1 GiB.
+
+CPU is near zero at idle. The limits matter during login bursts (Argon2id) and
+PostgreSQL checkpoints/autovacuum. Compose does not enforce
+`deploy.resources.reservations` outside Swarm, so only ceilings are declared;
+the host scheduler still shares unused CPU fairly.
+
+### PostgreSQL tuning rationale
+
+The authoritative file is [`deploy/postgres/99-small-vps.conf`](../deploy/postgres/99-small-vps.conf)
+(mounted read-only and passed as `config_file`; see
+[`deploy/postgres/README.md`](../deploy/postgres/README.md) for how to change it
+and when a reload is enough versus a restart). Key choices:
+
+- `shared_buffers = 128MB` — enough for this data set without duplicating the
+  host page cache or starving other services.
+- `effective_cache_size = 512MB` — planner hint, not an allocation; reflects
+  the modest page-cache share available to a shared database.
+- `work_mem = 4MB`, `maintenance_work_mem = 64MB`, `temp_buffers = 8MB` — keep
+  the worst case across 25 connections bounded; a household workload does not
+  need large sorts.
+- `max_connections = 25` — the API pool is 10, plus migrate, the healthcheck,
+  backups and an operator session, with headroom.
+- `wal_buffers = 4MB`, `min_wal_size = 128MB`, `max_wal_size = 1GB`,
+  `checkpoint_timeout = 15min` — low traffic means fewer, larger checkpoints;
+  this reduces fsync bursts and bounds WAL on a small disk.
+- `random_page_cost = 1.1` — SSD storage; favours indexes for small selective
+  queries.
+- `max_parallel_workers = 2`, `jit = off` — prevent the database from using all
+  host cores or paying JIT compilation cost for tiny queries.
+
+The API pool is bounded explicitly by `internal/config` defaults (open 10, idle
+5, connection lifetime 1h, idle time 15m) and exposed as
+`DATABASE_MAX_OPEN_CONNS`, `DATABASE_MAX_IDLE_CONNS`,
+`DATABASE_CONN_MAX_LIFETIME` and `DATABASE_CONN_MAX_IDLE_TIME`. Keep the open
+limit comfortably below `max_connections`; see the connection budget in
+`deploy/postgres/README.md`.
+
+### What to monitor
+
+- **Host memory and swap** (`free -h`, `vmstat 1`): available memory should stay
+  well above ~15%; sustained swap-in/out means the host is overcommitted.
+- **Container memory** (`docker stats --no-stream`): watch `db` and `api` against
+  their limits. `docker inspect` shows `OOMKilled` and the configured limit.
+- **Disk** (`df -h`, `df -i`): PostgreSQL WAL, the `pgdata` volume, Docker
+  images/logs and local backups all share the VPS disk.
+- **PostgreSQL** (`pg_stat_activity`, slow query log if enabled,
+  `SHOW max_connections`): connection saturation or repeated temp-file spills
+  are signals to revisit `work_mem` or the pool.
+- **API** (`/readyz`, structured logs): latency and restart counts.
+
+Alerting wiring for these signals is in [`RUNBOOK.md`](RUNBOOK.md) §5. If the
+host starts swapping or OOM-killing containers, use the
+[degraded host / OOM snippet](RUNBOOK.md#degraded-host--oom) rather than simply
+raising limits on a box that has no memory to spare.
 
 ## Security posture
 

@@ -301,7 +301,9 @@ A green backup command is not enough; these signals must reach a human:
 |--------|-----|-------------------------------------|
 | Backup failure | No new recovery point | systemd `OnFailure=` unit or cron `||` branch pings the failure URL; also `MAILTO` for cron. |
 | Stale backup age | The timer silently stopped | Dead-man's-switch check (for example healthchecks.io) with a 6-hour period and a 1-hour grace; no ping means an alert. |
-| Low disk space | PostgreSQL and WAL stop accepting writes | Daily systemd timer checks `df` and pings only when free space drops below 15% (or on error). |
+| Low disk space | PostgreSQL and WAL stop accepting writes | Daily systemd timer checks `df` and pings only when free space drops below 15% (or on error); include `df -i` if inode pressure is a risk. |
+| Host memory pressure | OOM killer / swap thrash affects every project on the shared box | Daily (or 5-minute) timer checks `free`/`vmstat` and alerts when available memory is below 15% or the host is swapping steadily. |
+| Container OOM kill | A service restarts without an obvious application error | Check `docker inspect` for `OOMKilled`/exit 137 and `docker stats`; alert on unexpected restarts of `db`/`api`. |
 | Service health | API/DB outage or restart loop | External HTTP check on `https://budget.example.com/readyz` every 5 minutes. |
 
 **Selected default:** [healthchecks.io](https://healthchecks.io/) free tier
@@ -332,7 +334,73 @@ The healthcheck period and grace are configured on the provider, not in the
 scripts. Logs contain the summary line and errors only; no passwords, keys or
 financial payloads.
 
+### Host-level checks for the shared box
+
+This VPS also runs nginx, a Calibre instance and other projects, so a healthy
+container can still be a symptom of an unhealthy host. Use these before and
+after changing limits (see also [DEPLOYMENT.md § Resource footprint /
+sizing](DEPLOYMENT.md#resource-footprint--sizing)):
+
+```sh
+free -h                              # available RAM and swap
+vmstat 1 5                           # si/so columns: sustained swap activity is bad
+docker stats --no-stream             # live per-container CPU/memory against limits
+df -h / && df -i /                   # disk blocks and inodes
+docker compose ps                    # restart/health state
+```
+
+For a specific container, confirm whether it hit its own ceiling or the host
+ran out of memory:
+
+```sh
+docker inspect --format '{{.Name}} OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}} limit={{.HostConfig.Memory}}' \
+  $(docker compose ps -q)
+sudo dmesg -T | grep -iE 'oom|killed process' | tail
+journalctl -k --since '1 hour ago' | grep -iE 'oom|killed process'
+```
+
 ## 6. Incident snippets
+
+### Degraded host / OOM
+
+Symptoms: `api` or `db` restarts, 502s from nginx, SSH/login slow, or the host
+becomes unresponsive while the application itself logged nothing obvious.
+
+1. **Stop and check the host before restarting anything.** Run the host-level
+   checks above. If available memory is near zero and the host is swapping, a
+   restart can make it worse; free memory first (stop a non-essential service
+   such as Calibre, or a runaway process).
+2. **Distinguish container limit from host pressure.** `docker inspect` shows
+   `OOMKilled=true`/exit 137. If `db`/`api` were killed *below* their configured
+   limits, the host was under pressure; if they hit the limit, the service needs
+   tuning or a justified limit increase. `dmesg`/`journalctl -k` confirm a
+   host-level OOM kill.
+3. **Check the API runtime first.** `GOMEMLIMIT` must stay below the `api`
+   memory limit (currently 192 MiB under 256 MiB). A `GOMEMLIMIT` above the
+   container limit lets the Go heap grow until the kernel kills the container.
+4. **Check PostgreSQL next.** Confirm the running values:
+   ```sh
+   docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW shared_buffers; SHOW work_mem; SHOW maintenance_work_mem; SHOW max_connections;"'
+   ```
+   If `db` is the pressure point, lower (in order of effect)
+   `shared_buffers`, `maintenance_work_mem`, `work_mem`, and `max_connections`
+   (raising the API pool only makes this worse). Apply reloadable settings with
+   `SELECT pg_reload_conf();`; `shared_buffers` and `max_connections` need
+   `docker compose restart db`. See `deploy/postgres/README.md`.
+5. **Recover in the right order:** database healthy → `migrate` completed →
+   `api` healthy → `curl -fsS http://127.0.0.1:8080/readyz` → nginx reload/TLS.
+   Do not `docker compose down -v`; the `pgdata` volume is the database.
+6. **Only raise limits if the host has headroom.** The shipped ceilings
+   (db 768 MiB, api 256 MiB) already leave most of a 4 vCPU / 8 GB box free.
+   Raising them on a host that is swapping just moves the failure around.
+7. **When to move `db` to its own box:** sustained host memory pressure or swap
+   despite tuning, database growth beyond a few GB, disk I/O from the database
+   affecting the other projects, or a need for more than ~1 GB of database
+   memory. A separate Hetzner instance (or managed PostgreSQL) is the clean
+   boundary; the backup/restore scripts already support restoring into a fresh
+   target. Until then, prefer tuning down over expanding on the shared host.
+
+### `db` will not start or corruption is suspected
 
 ### `db` will not start or corruption is suspected
 
