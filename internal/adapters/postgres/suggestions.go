@@ -51,6 +51,34 @@ func (r *suggestionRepository) Get(ctx context.Context, household domain.Househo
 	return suggestionFromModel(row, currency)
 }
 
+// List returns every suggestion in the household in deterministic id order.
+func (r *suggestionRepository) List(ctx context.Context, household domain.HouseholdId) ([]*domain.Suggestion, error) {
+	currency, err := currencyForHousehold(ctx, r.db, household.String())
+	if err != nil {
+		return nil, err
+	}
+	householdID, err := uuidFromDomain(household.String())
+	if err != nil {
+		return nil, err
+	}
+	var rows []suggestionModel
+	if result := r.db.WithContext(ctx).
+		Where("household_id = ?", householdID).
+		Order("id ASC").
+		Find(&rows); result.Error != nil {
+		return nil, toDomainErr(result.Error)
+	}
+	suggestions := make([]*domain.Suggestion, 0, len(rows))
+	for _, row := range rows {
+		suggestion, err := suggestionFromModel(row, currency)
+		if err != nil {
+			return nil, err
+		}
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, nil
+}
+
 // Save updates the aggregate only while the stored state still equals expected
 // (the same optimistic state guard as plans).
 func (r *suggestionRepository) Save(ctx context.Context, household domain.HouseholdId, suggestion *domain.Suggestion, expected domain.SuggestionState) error {

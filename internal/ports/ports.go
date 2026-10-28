@@ -332,6 +332,7 @@ type ReservationRepository interface {
 type PlanRepository interface {
 	Create(ctx context.Context, household domain.HouseholdId, plan *domain.PlannedOperation) error
 	Get(ctx context.Context, household domain.HouseholdId, id domain.PlanId) (*domain.PlannedOperation, error)
+	List(ctx context.Context, household domain.HouseholdId) ([]*domain.PlannedOperation, error)
 	Save(ctx context.Context, household domain.HouseholdId, plan *domain.PlannedOperation, expected domain.PlanState) error
 }
 
@@ -341,6 +342,7 @@ type PlanRepository interface {
 type SuggestionRepository interface {
 	Create(ctx context.Context, household domain.HouseholdId, suggestion *domain.Suggestion) error
 	Get(ctx context.Context, household domain.HouseholdId, id domain.SuggestionId) (*domain.Suggestion, error)
+	List(ctx context.Context, household domain.HouseholdId) ([]*domain.Suggestion, error)
 	Save(ctx context.Context, household domain.HouseholdId, suggestion *domain.Suggestion, expected domain.SuggestionState) error
 }
 

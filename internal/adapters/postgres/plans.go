@@ -56,6 +56,34 @@ func (r *planRepository) Get(ctx context.Context, household domain.HouseholdId, 
 	return planFromModel(row, currency)
 }
 
+// List returns every plan in the household in deterministic id order.
+func (r *planRepository) List(ctx context.Context, household domain.HouseholdId) ([]*domain.PlannedOperation, error) {
+	currency, err := currencyForHousehold(ctx, r.db, household.String())
+	if err != nil {
+		return nil, err
+	}
+	householdID, err := uuidFromDomain(household.String())
+	if err != nil {
+		return nil, err
+	}
+	var rows []planModel
+	if result := r.db.WithContext(ctx).
+		Where("household_id = ?", householdID).
+		Order("id ASC").
+		Find(&rows); result.Error != nil {
+		return nil, toDomainErr(result.Error)
+	}
+	plans := make([]*domain.PlannedOperation, 0, len(rows))
+	for _, row := range rows {
+		plan, err := planFromModel(row, currency)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
 // Save updates the whole aggregate only while the stored state still equals
 // expected. A mismatch is CONCURRENCY_CONFLICT; a missing row is
 // ENTITY_NOT_FOUND_OR_NOT_IN_HOUSEHOLD.

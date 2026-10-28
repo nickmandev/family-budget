@@ -158,6 +158,9 @@ func (*fakePlanRepository) Create(context.Context, domain.HouseholdId, *domain.P
 func (*fakePlanRepository) Get(context.Context, domain.HouseholdId, domain.PlanId) (*domain.PlannedOperation, error) {
 	return nil, domain.NewError(domain.CodeEntityNotFoundOrNotInHousehold, "fake plan")
 }
+func (*fakePlanRepository) List(context.Context, domain.HouseholdId) ([]*domain.PlannedOperation, error) {
+	return nil, nil
+}
 func (*fakePlanRepository) Save(context.Context, domain.HouseholdId, *domain.PlannedOperation, domain.PlanState) error {
 	return nil
 }
@@ -169,6 +172,9 @@ func (*fakeSuggestionRepository) Create(context.Context, domain.HouseholdId, *do
 }
 func (*fakeSuggestionRepository) Get(context.Context, domain.HouseholdId, domain.SuggestionId) (*domain.Suggestion, error) {
 	return nil, domain.NewError(domain.CodeEntityNotFoundOrNotInHousehold, "fake suggestion")
+}
+func (*fakeSuggestionRepository) List(context.Context, domain.HouseholdId) ([]*domain.Suggestion, error) {
+	return nil, nil
 }
 func (*fakeSuggestionRepository) Save(context.Context, domain.HouseholdId, *domain.Suggestion, domain.SuggestionState) error {
 	return nil

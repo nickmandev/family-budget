@@ -67,6 +67,9 @@ func NewServer(deps Dependencies) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/health", server.handleAPIVersionHealth)
 	server.registerAuthRoutes(mux)
 	server.registerResourceRoutes(mux)
+	server.registerTransactionRoutes(mux)
+	server.registerPlanRoutes(mux)
+	server.registerSuggestionRoutes(mux)
 
 	// Catch-all so unknown paths use the API error envelope instead of
 	// net/http's plain-text 404.
