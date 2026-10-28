@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"family-budget/internal/auth"
 	"family-budget/internal/config"
 	"family-budget/internal/ports"
 )
@@ -25,6 +26,14 @@ type Dependencies struct {
 	// Readiness is optional. A nil check means "trivially ready"; production
 	// wiring should ping the database with a short timeout.
 	Readiness func(context.Context) error
+
+	// Auth is the authentication service. When nil, auth routes are not
+	// registered; the skeleton (health-only) remains usable for tests.
+	Auth *auth.Service
+
+	// AuthRateLimiter overrides the limiter built from Config.Auth. It exists
+	// for tests and for deployments that share one limiter across servers.
+	AuthRateLimiter *RateLimiter
 }
 
 // Server owns the http.Server, the route mux and the middleware chain.
@@ -51,6 +60,7 @@ func NewServer(deps Dependencies) (*Server, error) {
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
 	mux.HandleFunc("GET /readyz", server.handleReadyz)
 	mux.HandleFunc("GET /api/v1/health", server.handleAPIVersionHealth)
+	server.registerAuthRoutes(mux)
 
 	// Catch-all so unknown paths use the API error envelope instead of
 	// net/http's plain-text 404.

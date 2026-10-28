@@ -141,6 +141,34 @@ type MembershipRecord struct {
 	RemovedAt *time.Time
 }
 
+// UserMembershipRecord is a membership projected from the user's side. The
+// authenticated-user endpoint (/api/v1/auth/me) needs every household a user
+// belongs to, so unlike MembershipRecord it carries the household id. It is a
+// read-only projection: membership administration is household-scoped.
+type UserMembershipRecord struct {
+	HouseholdID domain.HouseholdId
+	Role        MembershipRole
+	Status      MembershipStatus
+	JoinedAt    time.Time
+	RemovedAt   *time.Time
+}
+
+// SessionRecord is one opaque, revocable authentication session.
+//
+// TokenHash is the SHA-256 digest (hex) of the raw bearer token; the raw token
+// is returned to the client once at login and never persisted or logged.
+// ExpiresAt is an instant; RevokedAt is nil while the session is live. Sessions
+// are global (a user may have several), so they carry user_id rather than a
+// household id.
+type SessionRecord struct {
+	ID        string
+	UserID    domain.UserId
+	TokenHash string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
 // AccountRecord is the metadata needed for an account; balances are derived
 // from account_postings and reservations, never stored here.
 type AccountRecord struct {
@@ -218,11 +246,27 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (UserRecord, error)
 }
 
+// SessionRepository stores authentication sessions. Lookups are by token
+// hash, never by raw token. Revoke is idempotent: revoking an already-revoked
+// session is not an error. RevokeAllForUser revokes every live session for the
+// user (used after a credential change or owner recovery).
+type SessionRepository interface {
+	Create(ctx context.Context, session SessionRecord) error
+	FindByTokenHash(ctx context.Context, tokenHash string) (SessionRecord, error)
+	Revoke(ctx context.Context, id string) error
+	RevokeAllForUser(ctx context.Context, user domain.UserId, now time.Time) error
+}
+
 // MembershipRepository stores household membership and role state.
+//
+// ListForUser is the user-scoped projection used by /auth/me. Like every other
+// read it must not expose memberships the caller cannot see; callers pass the
+// authenticated user's id, which they obtained from a validated session.
 type MembershipRepository interface {
 	Add(ctx context.Context, household domain.HouseholdId, membership MembershipRecord) error
 	Get(ctx context.Context, household domain.HouseholdId, user domain.UserId) (MembershipRecord, error)
 	List(ctx context.Context, household domain.HouseholdId) ([]MembershipRecord, error)
+	ListForUser(ctx context.Context, user domain.UserId) ([]UserMembershipRecord, error)
 	Save(ctx context.Context, household domain.HouseholdId, membership MembershipRecord) error
 }
 
@@ -319,6 +363,7 @@ type IdempotencyRepository interface {
 type Repositories struct {
 	Households   HouseholdRepository
 	Users        UserRepository
+	Sessions     SessionRepository
 	Memberships  MembershipRepository
 	Accounts     AccountRepository
 	Envelopes    EnvelopeRepository

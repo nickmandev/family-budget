@@ -39,6 +39,19 @@ type userModel struct {
 
 func (userModel) TableName() string { return "users" }
 
+// sessionModel maps sessions. Sessions are global authentication state keyed
+// by user; only the token digest is stored.
+type sessionModel struct {
+	ID        pgtype.UUID `gorm:"column:id;primaryKey"`
+	UserID    pgtype.UUID `gorm:"column:user_id"`
+	TokenHash string      `gorm:"column:token_hash"`
+	CreatedAt time.Time   `gorm:"column:created_at"`
+	ExpiresAt time.Time   `gorm:"column:expires_at"`
+	RevokedAt *time.Time  `gorm:"column:revoked_at"`
+}
+
+func (sessionModel) TableName() string { return "sessions" }
+
 // membershipModel maps household_memberships.
 type membershipModel struct {
 	HouseholdID pgtype.UUID `gorm:"column:household_id;primaryKey"`

@@ -62,6 +62,7 @@ var (
 	errRequestTimeout     = newAPIError(http.StatusGatewayTimeout, CodeRequestTimeout, "The request timed out.")
 	errServiceUnavailable = newAPIError(http.StatusServiceUnavailable, CodeServiceUnavailable, "The service is not ready.")
 	errNotFound           = newAPIError(http.StatusNotFound, CodeNotFound, "The requested resource was not found.")
+	errRateLimited        = newAPIError(http.StatusTooManyRequests, CodeRateLimited, "Too many attempts; try again later.")
 	errInternal           = newAPIError(http.StatusInternalServerError, CodeInternalError, "An internal error occurred.")
 )
 
@@ -158,10 +159,12 @@ func apiErrorFromCode(code string, err error) *apiError {
 		return errInternal
 	}
 	mapped := &apiError{Status: mapping.status, Code: code, Message: mapping.message}
-	if fielder, ok := err.(interface{ ErrorField() string }); ok {
+	var fielder interface{ ErrorField() string }
+	if errors.As(err, &fielder) {
 		mapped.Field = fielder.ErrorField()
 	}
-	if detailer, ok := err.(interface{ ErrorDetails() any }); ok {
+	var detailer interface{ ErrorDetails() any }
+	if errors.As(err, &detailer) {
 		mapped.Details = detailer.ErrorDetails()
 	}
 	return mapped

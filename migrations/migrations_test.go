@@ -267,12 +267,13 @@ func TestDownDropsEveryTable(t *testing.T) {
 }
 
 // TestEveryHouseholdOwnedTableCarriesHouseholdID reinforces the isolation
-// decision in STACK_DECISIONS §3. households is the household itself and users
-// is the global authentication identity, so neither carries household_id.
+// decision in STACK_DECISIONS §3. households is the household itself; users is
+// the global authentication identity, and sessions is global authentication
+// state keyed by user, so none of them carries household_id.
 func TestEveryHouseholdOwnedTableCarriesHouseholdID(t *testing.T) {
 	for _, file := range loadMigrations(t) {
 		for _, name := range tableNames(file.up) {
-			if name == "households" || name == "users" {
+			if name == "households" || name == "users" || name == "sessions" {
 				continue
 			}
 			body := tableBody(file.up, name)
@@ -342,19 +343,27 @@ func TestIdempotencyKeysAreUnique(t *testing.T) {
 	journalUniqueRe := regexp.MustCompile(`(?is)UNIQUE\s*\(\s*household_id\s*,\s*idempotency_key\s*\)`)
 	recordsPrimaryRe := regexp.MustCompile(`(?is)PRIMARY\s+KEY\s*\(\s*household_id\s*,\s*idempotency_key\s*\)`)
 
+	foundJournal, foundRecords := false, false
 	for _, file := range loadMigrations(t) {
-		journal := tableBody(file.up, "journal_operations")
-		if journal == "" {
-			t.Errorf("%s: journal_operations table not found", file.name)
-		} else if !journalUniqueRe.MatchString(journal) {
-			t.Errorf("%s: journal_operations must have UNIQUE (household_id, idempotency_key)", file.name)
+		// Later migrations do not recreate these tables; only the migration
+		// that defines a table is responsible for its idempotency key shape.
+		if journal := tableBody(file.up, "journal_operations"); journal != "" {
+			foundJournal = true
+			if !journalUniqueRe.MatchString(journal) {
+				t.Errorf("%s: journal_operations must have UNIQUE (household_id, idempotency_key)", file.name)
+			}
 		}
-
-		records := tableBody(file.up, "idempotency_records")
-		if records == "" {
-			t.Errorf("%s: idempotency_records table not found", file.name)
-		} else if !recordsPrimaryRe.MatchString(records) {
-			t.Errorf("%s: idempotency_records must have PRIMARY KEY (household_id, idempotency_key)", file.name)
+		if records := tableBody(file.up, "idempotency_records"); records != "" {
+			foundRecords = true
+			if !recordsPrimaryRe.MatchString(records) {
+				t.Errorf("%s: idempotency_records must have PRIMARY KEY (household_id, idempotency_key)", file.name)
+			}
 		}
+	}
+	if !foundJournal {
+		t.Error("journal_operations table not found in any migration")
+	}
+	if !foundRecords {
+		t.Error("idempotency_records table not found in any migration")
 	}
 }

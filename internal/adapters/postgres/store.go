@@ -44,6 +44,17 @@ func (s *Store) DB() *gorm.DB {
 	return s.db
 }
 
+// Ping checks database connectivity for the readiness probe. It returns the
+// driver error to the caller, which logs it server-side and reports only a
+// generic "not ready" response.
+func (s *Store) Ping(ctx context.Context) error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.PingContext(ctx)
+}
+
 // Repositories returns the repository set bound to the store's non-transaction
 // handle. Read-only queries may use it directly; every command must run through
 // WithinTransaction.
@@ -73,6 +84,7 @@ func newRepositories(db *gorm.DB) ports.Repositories {
 	return ports.Repositories{
 		Households:   &householdRepository{db: db},
 		Users:        &userRepository{db: db},
+		Sessions:     &sessionRepository{db: db},
 		Memberships:  &membershipRepository{db: db},
 		Accounts:     &accountRepository{db: db},
 		Envelopes:    &envelopeRepository{db: db},
@@ -89,6 +101,7 @@ var (
 	_ ports.UnitOfWork            = (*Store)(nil)
 	_ ports.HouseholdRepository   = (*householdRepository)(nil)
 	_ ports.UserRepository        = (*userRepository)(nil)
+	_ ports.SessionRepository     = (*sessionRepository)(nil)
 	_ ports.MembershipRepository  = (*membershipRepository)(nil)
 	_ ports.AccountRepository     = (*accountRepository)(nil)
 	_ ports.EnvelopeRepository    = (*envelopeRepository)(nil)

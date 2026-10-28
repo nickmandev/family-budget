@@ -65,6 +65,34 @@ func (r *membershipRepository) List(ctx context.Context, household domain.Househ
 	return records, nil
 }
 
+// ListForUser returns every membership held by one user across households. It
+// is the /auth/me projection; ordering is deterministic for stable responses.
+func (r *membershipRepository) ListForUser(ctx context.Context, user domain.UserId) ([]ports.UserMembershipRecord, error) {
+	userID, err := uuidFromDomain(user.String())
+	if err != nil {
+		return nil, err
+	}
+	var rows []membershipModel
+	result := r.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("joined_at ASC, household_id ASC").
+		Find(&rows)
+	if result.Error != nil {
+		return nil, toDomainErr(result.Error)
+	}
+	records := make([]ports.UserMembershipRecord, 0, len(rows))
+	for _, row := range rows {
+		records = append(records, ports.UserMembershipRecord{
+			HouseholdID: domain.HouseholdId(row.HouseholdID.String()),
+			Role:        ports.MembershipRole(row.Role),
+			Status:      ports.MembershipStatus(row.Status),
+			JoinedAt:    row.JoinedAt.UTC(),
+			RemovedAt:   utcTimePointer(row.RemovedAt),
+		})
+	}
+	return records, nil
+}
+
 // Save updates role/status/removal only; joined_at is immutable history.
 func (r *membershipRepository) Save(ctx context.Context, household domain.HouseholdId, membership ports.MembershipRecord) error {
 	householdID, err := uuidFromDomain(household.String())

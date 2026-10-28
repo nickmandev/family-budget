@@ -24,6 +24,7 @@ import (
 var (
 	_ ports.HouseholdRepository   = (*fakeHouseholdRepository)(nil)
 	_ ports.UserRepository        = (*fakeUserRepository)(nil)
+	_ ports.SessionRepository     = (*fakeSessionRepository)(nil)
 	_ ports.MembershipRepository  = (*fakeMembershipRepository)(nil)
 	_ ports.AccountRepository     = (*fakeAccountRepository)(nil)
 	_ ports.EnvelopeRepository    = (*fakeEnvelopeRepository)(nil)
@@ -57,6 +58,17 @@ func (*fakeUserRepository) FindByEmail(context.Context, string) (ports.UserRecor
 	return ports.UserRecord{}, domain.NewError(domain.CodeEntityNotFoundOrNotInHousehold, "fake user")
 }
 
+type fakeSessionRepository struct{}
+
+func (*fakeSessionRepository) Create(context.Context, ports.SessionRecord) error { return nil }
+func (*fakeSessionRepository) FindByTokenHash(context.Context, string) (ports.SessionRecord, error) {
+	return ports.SessionRecord{}, domain.NewError(domain.CodeEntityNotFoundOrNotInHousehold, "fake session")
+}
+func (*fakeSessionRepository) Revoke(context.Context, string) error { return nil }
+func (*fakeSessionRepository) RevokeAllForUser(context.Context, domain.UserId, time.Time) error {
+	return nil
+}
+
 type fakeMembershipRepository struct{}
 
 func (*fakeMembershipRepository) Add(context.Context, domain.HouseholdId, ports.MembershipRecord) error {
@@ -66,6 +78,9 @@ func (*fakeMembershipRepository) Get(context.Context, domain.HouseholdId, domain
 	return ports.MembershipRecord{}, domain.NewError(domain.CodeEntityNotFoundOrNotInHousehold, "fake membership")
 }
 func (*fakeMembershipRepository) List(context.Context, domain.HouseholdId) ([]ports.MembershipRecord, error) {
+	return nil, nil
+}
+func (*fakeMembershipRepository) ListForUser(context.Context, domain.UserId) ([]ports.UserMembershipRecord, error) {
 	return nil, nil
 }
 func (*fakeMembershipRepository) Save(context.Context, domain.HouseholdId, ports.MembershipRecord) error {
@@ -180,6 +195,7 @@ func (u *fakeUnitOfWork) WithinTransaction(ctx context.Context, fn func(context.
 		u.repos = ports.Repositories{
 			Households:   &fakeHouseholdRepository{},
 			Users:        &fakeUserRepository{},
+			Sessions:     &fakeSessionRepository{},
 			Memberships:  &fakeMembershipRepository{},
 			Accounts:     &fakeAccountRepository{},
 			Envelopes:    &fakeEnvelopeRepository{},
