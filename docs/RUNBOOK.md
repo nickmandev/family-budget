@@ -15,11 +15,14 @@ The scripts are in [`scripts/`](../scripts):
 | `scripts/backup.sh` | `pg_dump -Fc` inside the `db` container, sha256, `age` encryption, rsync to the off-host target, retention. |
 | `scripts/restore.sh` | Verify + decrypt + restore into a **fresh** database, then migrate, start the API and verify. |
 | `scripts/verify-restore.sh` | Connectivity, schema, row-count, ledger consistency and `/readyz` checks. |
+| `scripts/integration-test.sh` | Disposable PostgreSQL (Docker/Podman/local `initdb`) + full persistence integration suite. |
 
-> The scripts are statically validated in `go test ./deploy/...` and with
-> `bash -n`. They have **not** been executed against a live Docker daemon in the
-> repository's CI. The first backup and the first restore drill must happen on
-> the deployment host and be recorded in the drill log below.
+> The backup/restore scripts are statically validated in `go test ./deploy/...`
+> and with `bash -n`. They have **not** been executed against a live Docker
+> daemon in the repository's CI. The first backup and the first restore drill
+> must happen on the deployment host and be recorded in the drill log below.
+> The integration runner has been executed live; see
+> [§8](#8-quality-gate-evidence).
 
 ## 1. Backup policy
 
@@ -486,3 +489,30 @@ systemctl list-timers family-budget-backup.timer
 After enabling, run `scripts/backup.sh` manually once and confirm the summary
 line, the off-host artifact and a `scripts/restore.sh` drill. Installation is
 not complete until the first drill passes.
+
+## 8. Quality gate evidence
+
+`MVP_SCOPE.md` quality gate 3 requires PostgreSQL integration tests for
+migrations, constraints, idempotency, rollback and concurrent
+spending/reallocation. A passing run is now recorded, not assumed.
+
+Recorded live run:
+
+- Date: 2026-10-28.
+- PostgreSQL: 18.6 (`postgres:18.6`, the `compose.yaml` pin).
+- Provisioning: throwaway rootless Docker 29.9.0 container with host networking
+  (the rootless pasta network could not publish ports; the runner detects this
+  and falls back automatically). Reproduce with
+  `scripts/integration-test.sh --all --race`.
+- PostgreSQL adapter suite: 47 test cases (19 top-level + 28 subtests), 47
+  passed, 0 failed, 0 skipped.
+- Full `go test -count=1 ./...` with `TEST_POSTGRES_DSN` set: 1193 test cases
+  (359 top-level), all passed, 0 failed, 0 skipped.
+- `go test -count=1 -race ./...` with `TEST_POSTGRES_DSN` set: all packages
+  green.
+
+The first live run also found four test-harness assumptions that had never been
+executed (migration SQL splitting, the `ON DELETE RESTRICT` SQLSTATE, the
+migration count, and non-hexadecimal test fingerprints); they were fixed in the
+test code. Future gate-3 evidence should record the same fields: date,
+PostgreSQL version, and passed/failed/skipped counts.

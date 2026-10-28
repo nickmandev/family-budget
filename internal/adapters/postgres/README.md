@@ -6,23 +6,30 @@ runs `AutoMigrate`.
 
 ## Integration tests
 
-Every test in this package skips when no database is configured. Run the suite
-against a disposable PostgreSQL 18 instance:
+Every test in this package skips when no database is configured. The runner
+provisions a disposable PostgreSQL, exports `TEST_POSTGRES_DSN`, runs the suite
+and tears the database down again:
+
+```sh
+scripts/integration-test.sh          # adapter integration suite
+scripts/integration-test.sh --all --race
+```
+
+It prefers Docker, then Podman, then a local `initdb` cluster, and falls back
+to host networking when rootless Docker cannot publish ports. `--keep-db`
+leaves the server running and prints its DSN; `--help` lists every option.
+
+To use an already-running PostgreSQL instead, set the DSN yourself (pinned
+image matches `compose.yaml`):
 
 ```sh
 docker run --rm -d --name family-budget-test-postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=family_budget \
-  -p 55432:5432 \
-  postgres:18
+  -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+  -p 127.0.0.1:55432:5432 postgres:18.6
 
-TEST_POSTGRES_DSN='postgres://postgres:postgres@localhost:55432/family_budget?sslmode=disable' \
+TEST_POSTGRES_DSN='postgres://test:test@127.0.0.1:55432/test?sslmode=disable' \
   go test ./internal/adapters/postgres/... -count=1
-```
 
-Stop and remove the container afterwards:
-
-```sh
 docker rm -f family-budget-test-postgres
 ```
 
@@ -52,5 +59,6 @@ plus the materialized `households.ledger_version`. Any mismatch is
 ## Configuration
 
 - `TEST_POSTGRES_DSN` (preferred) or `DATABASE_URL` enables integration tests.
-- No docker-compose file is added to the repository; the command above is the
-  documented disposable database.
+- `scripts/integration-test.sh` is the documented disposable database. The
+  production `compose.yaml` database stays internal-only and is not used by the
+  tests.
