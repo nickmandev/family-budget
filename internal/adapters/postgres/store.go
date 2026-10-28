@@ -44,6 +44,16 @@ func (s *Store) DB() *gorm.DB {
 	return s.db
 }
 
+// Close releases the underlying SQL connection pool. The process entrypoint
+// calls it during shutdown; store methods must not be used afterwards.
+func (s *Store) Close() error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
 // Ping checks database connectivity for the readiness probe. It returns the
 // driver error to the caller, which logs it server-side and reports only a
 // generic "not ready" response.
