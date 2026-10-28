@@ -41,12 +41,12 @@ func (s *Server) registerSuggestionRoutes(mux *http.ServeMux) {
 	if s.deps.App == nil {
 		return
 	}
-	mux.Handle("GET /api/v1/households/{id}/suggestions", s.requireAuth(http.HandlerFunc(s.handleListSuggestions)))
-	mux.Handle("POST /api/v1/households/{id}/suggestions", s.requireAuth(http.HandlerFunc(s.handleCreateSuggestion)))
-	mux.Handle("POST /api/v1/households/{id}/suggestions/{suggestionID}/edit", s.requireAuth(http.HandlerFunc(s.handleEditSuggestion)))
-	mux.Handle("POST /api/v1/households/{id}/suggestions/{suggestionID}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelSuggestion)))
-	mux.Handle("POST /api/v1/households/{id}/suggestions/{suggestionID}/confirm", s.requireAuth(http.HandlerFunc(s.handleConfirmSuggestion)))
-	mux.Handle("POST /api/v1/households/{id}/suggestions/{suggestionID}/convert", s.requireAuth(http.HandlerFunc(s.handleConvertSuggestion)))
+	s.register(mux, "GET /api/v1/households/{id}/suggestions", s.requireAuth(http.HandlerFunc(s.handleListSuggestions)))
+	s.register(mux, "POST /api/v1/households/{id}/suggestions", s.requireAuth(http.HandlerFunc(s.handleCreateSuggestion)))
+	s.register(mux, "POST /api/v1/households/{id}/suggestions/{suggestionID}/edit", s.requireAuth(http.HandlerFunc(s.handleEditSuggestion)))
+	s.register(mux, "POST /api/v1/households/{id}/suggestions/{suggestionID}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelSuggestion)))
+	s.register(mux, "POST /api/v1/households/{id}/suggestions/{suggestionID}/confirm", s.requireAuth(http.HandlerFunc(s.handleConfirmSuggestion)))
+	s.register(mux, "POST /api/v1/households/{id}/suggestions/{suggestionID}/convert", s.requireAuth(http.HandlerFunc(s.handleConvertSuggestion)))
 }
 
 func suggestionPathID(r *http.Request) (domain.SuggestionId, error) {

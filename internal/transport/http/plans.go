@@ -49,13 +49,13 @@ func (s *Server) registerPlanRoutes(mux *http.ServeMux) {
 	if s.deps.App == nil {
 		return
 	}
-	mux.Handle("GET /api/v1/households/{id}/plans", s.requireAuth(http.HandlerFunc(s.handleListPlans)))
-	mux.Handle("POST /api/v1/households/{id}/plans", s.requireAuth(http.HandlerFunc(s.handleCreatePlan)))
-	mux.Handle("GET /api/v1/households/{id}/plans/{planID}", s.requireAuth(http.HandlerFunc(s.handleGetPlan)))
-	mux.Handle("POST /api/v1/households/{id}/plans/{planID}/authorize", s.requireAuth(http.HandlerFunc(s.handleAuthorizePlan)))
-	mux.Handle("POST /api/v1/households/{id}/plans/{planID}/resize", s.requireAuth(http.HandlerFunc(s.handleResizePlan)))
-	mux.Handle("POST /api/v1/households/{id}/plans/{planID}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelPlan)))
-	mux.Handle("POST /api/v1/households/{id}/plans/{planID}/complete", s.requireAuth(http.HandlerFunc(s.handleCompletePlan)))
+	s.register(mux, "GET /api/v1/households/{id}/plans", s.requireAuth(http.HandlerFunc(s.handleListPlans)))
+	s.register(mux, "POST /api/v1/households/{id}/plans", s.requireAuth(http.HandlerFunc(s.handleCreatePlan)))
+	s.register(mux, "GET /api/v1/households/{id}/plans/{planID}", s.requireAuth(http.HandlerFunc(s.handleGetPlan)))
+	s.register(mux, "POST /api/v1/households/{id}/plans/{planID}/authorize", s.requireAuth(http.HandlerFunc(s.handleAuthorizePlan)))
+	s.register(mux, "POST /api/v1/households/{id}/plans/{planID}/resize", s.requireAuth(http.HandlerFunc(s.handleResizePlan)))
+	s.register(mux, "POST /api/v1/households/{id}/plans/{planID}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelPlan)))
+	s.register(mux, "POST /api/v1/households/{id}/plans/{planID}/complete", s.requireAuth(http.HandlerFunc(s.handleCompletePlan)))
 }
 
 func planPathID(r *http.Request) (domain.PlanId, error) {

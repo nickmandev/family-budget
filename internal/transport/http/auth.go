@@ -72,10 +72,10 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 		return RateLimit(limiter, authRateLimitKey)(next)
 	}
 
-	mux.Handle("POST /api/v1/auth/register", rateLimited(http.HandlerFunc(s.handleRegister)))
-	mux.Handle("POST /api/v1/auth/login", rateLimited(http.HandlerFunc(s.handleLogin)))
-	mux.Handle("POST /api/v1/auth/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
-	mux.Handle("GET /api/v1/auth/me", s.requireAuth(http.HandlerFunc(s.handleMe)))
+	s.register(mux, "POST /api/v1/auth/register", rateLimited(http.HandlerFunc(s.handleRegister)))
+	s.register(mux, "POST /api/v1/auth/login", rateLimited(http.HandlerFunc(s.handleLogin)))
+	s.register(mux, "POST /api/v1/auth/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
+	s.register(mux, "GET /api/v1/auth/me", s.requireAuth(http.HandlerFunc(s.handleMe)))
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {

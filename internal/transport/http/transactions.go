@@ -113,17 +113,17 @@ func (s *Server) registerTransactionRoutes(mux *http.ServeMux) {
 	if s.deps.App == nil {
 		return
 	}
-	mux.Handle("GET /api/v1/households/{id}/transactions", s.requireAuth(http.HandlerFunc(s.handleListTransactions)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/income", s.requireAuth(http.HandlerFunc(s.handleIncome)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/purchases", s.requireAuth(http.HandlerFunc(s.handlePurchase)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/card-payments", s.requireAuth(http.HandlerFunc(s.handleCardPayment)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/card-fees", s.requireAuth(http.HandlerFunc(s.handleCardFee)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/transfers", s.requireAuth(http.HandlerFunc(s.handleTransfer)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/refunds", s.requireAuth(http.HandlerFunc(s.handleRefund)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/reversals", s.requireAuth(http.HandlerFunc(s.handleReversal)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/corrections", s.requireAuth(http.HandlerFunc(s.handleCorrection)))
-	mux.Handle("POST /api/v1/households/{id}/transactions/reconciliations", s.requireAuth(http.HandlerFunc(s.handleReconciliation)))
-	mux.Handle("GET /api/v1/households/{id}/resolution", s.requireAuth(http.HandlerFunc(s.handleResolution)))
+	s.register(mux, "GET /api/v1/households/{id}/transactions", s.requireAuth(http.HandlerFunc(s.handleListTransactions)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/income", s.requireAuth(http.HandlerFunc(s.handleIncome)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/purchases", s.requireAuth(http.HandlerFunc(s.handlePurchase)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/card-payments", s.requireAuth(http.HandlerFunc(s.handleCardPayment)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/card-fees", s.requireAuth(http.HandlerFunc(s.handleCardFee)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/transfers", s.requireAuth(http.HandlerFunc(s.handleTransfer)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/refunds", s.requireAuth(http.HandlerFunc(s.handleRefund)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/reversals", s.requireAuth(http.HandlerFunc(s.handleReversal)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/corrections", s.requireAuth(http.HandlerFunc(s.handleCorrection)))
+	s.register(mux, "POST /api/v1/households/{id}/transactions/reconciliations", s.requireAuth(http.HandlerFunc(s.handleReconciliation)))
+	s.register(mux, "GET /api/v1/households/{id}/resolution", s.requireAuth(http.HandlerFunc(s.handleResolution)))
 }
 
 func parseAccountID(raw, field string) (domain.AccountId, error) {

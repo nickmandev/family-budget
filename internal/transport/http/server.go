@@ -46,6 +46,11 @@ type Server struct {
 	deps       Dependencies
 	handler    http.Handler
 	httpServer *http.Server
+
+	// routes records the method-aware patterns registered on the mux. It is
+	// the authoritative route table for contract drift tests, so a pattern
+	// cannot be documented without being registered (or vice versa).
+	routes []string
 }
 
 // NewServer builds the route table and middleware chain. The route set is
@@ -62,9 +67,9 @@ func NewServer(deps Dependencies) (*Server, error) {
 	server := &Server{deps: deps}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", server.handleHealthz)
-	mux.HandleFunc("GET /readyz", server.handleReadyz)
-	mux.HandleFunc("GET /api/v1/health", server.handleAPIVersionHealth)
+	server.registerFunc(mux, "GET /healthz", server.handleHealthz)
+	server.registerFunc(mux, "GET /readyz", server.handleReadyz)
+	server.registerFunc(mux, "GET /api/v1/health", server.handleAPIVersionHealth)
 	server.registerAuthRoutes(mux)
 	server.registerResourceRoutes(mux)
 	server.registerTransactionRoutes(mux)
@@ -95,6 +100,24 @@ func NewServer(deps Dependencies) (*Server, error) {
 	}
 
 	return server, nil
+}
+
+// register installs a route and records its pattern. Every route must go
+// through this helper so the contract drift test sees exactly what ServeMux
+// serves.
+func (s *Server) register(mux *http.ServeMux, pattern string, handler http.Handler) {
+	mux.Handle(pattern, handler)
+	s.routes = append(s.routes, pattern)
+}
+
+// registerFunc is the http.HandlerFunc convenience form of register.
+func (s *Server) registerFunc(mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	s.register(mux, pattern, handler)
+}
+
+// Routes returns a copy of the registered method-aware route patterns.
+func (s *Server) Routes() []string {
+	return append([]string(nil), s.routes...)
 }
 
 // Handler exposes the composed handler for httptest and reverse-proxy setup.

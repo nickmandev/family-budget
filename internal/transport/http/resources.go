@@ -71,26 +71,26 @@ func (s *Server) registerResourceRoutes(mux *http.ServeMux) {
 	if s.deps.App == nil {
 		return
 	}
-	mux.Handle("POST /api/v1/households", s.requireAuth(http.HandlerFunc(s.handleCreateHousehold)))
-	mux.Handle("GET /api/v1/households", s.requireAuth(http.HandlerFunc(s.handleListHouseholds)))
-	mux.Handle("GET /api/v1/households/{id}", s.requireAuth(http.HandlerFunc(s.handleGetHousehold)))
+	s.register(mux, "POST /api/v1/households", s.requireAuth(http.HandlerFunc(s.handleCreateHousehold)))
+	s.register(mux, "GET /api/v1/households", s.requireAuth(http.HandlerFunc(s.handleListHouseholds)))
+	s.register(mux, "GET /api/v1/households/{id}", s.requireAuth(http.HandlerFunc(s.handleGetHousehold)))
 
-	mux.Handle("GET /api/v1/households/{id}/members", s.requireAuth(http.HandlerFunc(s.handleListMembers)))
-	mux.Handle("POST /api/v1/households/{id}/members", s.requireAuth(http.HandlerFunc(s.handleAddMember)))
-	mux.Handle("DELETE /api/v1/households/{id}/members/{userID}", s.requireAuth(http.HandlerFunc(s.handleRemoveMember)))
+	s.register(mux, "GET /api/v1/households/{id}/members", s.requireAuth(http.HandlerFunc(s.handleListMembers)))
+	s.register(mux, "POST /api/v1/households/{id}/members", s.requireAuth(http.HandlerFunc(s.handleAddMember)))
+	s.register(mux, "DELETE /api/v1/households/{id}/members/{userID}", s.requireAuth(http.HandlerFunc(s.handleRemoveMember)))
 
-	mux.Handle("GET /api/v1/households/{id}/accounts", s.requireAuth(http.HandlerFunc(s.handleListAccounts)))
-	mux.Handle("POST /api/v1/households/{id}/accounts", s.requireAuth(http.HandlerFunc(s.handleCreateAccount)))
-	mux.Handle("PATCH /api/v1/households/{id}/accounts/{accountID}", s.requireAuth(http.HandlerFunc(s.handleUpdateAccount)))
-	mux.Handle("POST /api/v1/households/{id}/accounts/{accountID}/opening-balance", s.requireAuth(http.HandlerFunc(s.handleOpeningBalance)))
+	s.register(mux, "GET /api/v1/households/{id}/accounts", s.requireAuth(http.HandlerFunc(s.handleListAccounts)))
+	s.register(mux, "POST /api/v1/households/{id}/accounts", s.requireAuth(http.HandlerFunc(s.handleCreateAccount)))
+	s.register(mux, "PATCH /api/v1/households/{id}/accounts/{accountID}", s.requireAuth(http.HandlerFunc(s.handleUpdateAccount)))
+	s.register(mux, "POST /api/v1/households/{id}/accounts/{accountID}/opening-balance", s.requireAuth(http.HandlerFunc(s.handleOpeningBalance)))
 
-	mux.Handle("GET /api/v1/households/{id}/envelopes", s.requireAuth(http.HandlerFunc(s.handleListEnvelopes)))
-	mux.Handle("POST /api/v1/households/{id}/envelopes", s.requireAuth(http.HandlerFunc(s.handleCreateEnvelope)))
-	mux.Handle("PATCH /api/v1/households/{id}/envelopes/{envelopeID}", s.requireAuth(http.HandlerFunc(s.handleUpdateEnvelope)))
+	s.register(mux, "GET /api/v1/households/{id}/envelopes", s.requireAuth(http.HandlerFunc(s.handleListEnvelopes)))
+	s.register(mux, "POST /api/v1/households/{id}/envelopes", s.requireAuth(http.HandlerFunc(s.handleCreateEnvelope)))
+	s.register(mux, "PATCH /api/v1/households/{id}/envelopes/{envelopeID}", s.requireAuth(http.HandlerFunc(s.handleUpdateEnvelope)))
 
-	mux.Handle("POST /api/v1/households/{id}/allocations", s.requireAuth(http.HandlerFunc(s.handleAllocate)))
-	mux.Handle("POST /api/v1/households/{id}/reallocations", s.requireAuth(http.HandlerFunc(s.handleReallocate)))
-	mux.Handle("GET /api/v1/households/{id}/balances", s.requireAuth(http.HandlerFunc(s.handleBalances)))
+	s.register(mux, "POST /api/v1/households/{id}/allocations", s.requireAuth(http.HandlerFunc(s.handleAllocate)))
+	s.register(mux, "POST /api/v1/households/{id}/reallocations", s.requireAuth(http.HandlerFunc(s.handleReallocate)))
+	s.register(mux, "GET /api/v1/households/{id}/balances", s.requireAuth(http.HandlerFunc(s.handleBalances)))
 }
 
 func actor(r *http.Request) (domain.UserId, error) {
