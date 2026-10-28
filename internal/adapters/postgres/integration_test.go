@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -278,13 +279,15 @@ func TestHouseholdScopedForeignKeysRejectCrossHouseholdReferences(t *testing.T) 
 		if err := rawInsertAccountPosting(db, a.householdID, opA, a.accountID, 100); err != nil {
 			t.Fatalf("seed account posting: %v", err)
 		}
-		wantSQLState(t, db.Exec(`DELETE FROM accounts WHERE id = ?`, mustUUID(t, a.accountID.String())).Error, sqlStateForeignKeyViolation)
+		// PostgreSQL reports an ON DELETE RESTRICT violation as 23001
+		// (restrict_violation), not as a NO ACTION foreign-key violation.
+		wantSQLState(t, db.Exec(`DELETE FROM accounts WHERE id = ?`, mustUUID(t, a.accountID.String())).Error, sqlStateRestrictViolation)
 	})
 	t.Run("deleting an envelope with postings is restricted", func(t *testing.T) {
 		if err := rawInsertEnvelopePosting(db, a.householdID, opA, a.envelopeID, 100); err != nil {
 			t.Fatalf("seed envelope posting: %v", err)
 		}
-		wantSQLState(t, db.Exec(`DELETE FROM envelopes WHERE id = ?`, mustUUID(t, a.envelopeID.String())).Error, sqlStateForeignKeyViolation)
+		wantSQLState(t, db.Exec(`DELETE FROM envelopes WHERE id = ?`, mustUUID(t, a.envelopeID.String())).Error, sqlStateRestrictViolation)
 	})
 
 	t.Run("append port rejects another household account", func(t *testing.T) {
@@ -295,7 +298,7 @@ func TestHouseholdScopedForeignKeysRejectCrossHouseholdReferences(t *testing.T) 
 		amount := testPositiveAmount(t, 100, a.currency)
 		operation := newJournalOperation(
 			t, a, domain.JournalOperationId(mustID(t)),
-			domain.IdempotencyKey("cross-"+mustID(t)), domain.RequestFingerprint("cross"),
+			domain.IdempotencyKey("cross-"+mustID(t)), domain.RequestFingerprint("c0de"),
 			domain.OpIncome, date, &amount,
 			domain.Effects{Postings: domain.PostingSet{Accounts: []domain.AccountPosting{{
 				AccountID: b.accountID,
@@ -336,7 +339,7 @@ func TestCommandIdempotencyAndRollbackEndToEnd(t *testing.T) {
 		amount := testPositiveAmount(t, minor, a.currency)
 		return newJournalOperation(
 			t, a, domain.JournalOperationId(mustID(t)),
-			domain.IdempotencyKey(key), domain.RequestFingerprint("fingerprint-"+key),
+			domain.IdempotencyKey(key), domain.RequestFingerprint(fmt.Sprintf("%x", key)),
 			domain.OpIncome, date, &amount,
 			domain.Effects{Postings: domain.PostingSet{Accounts: []domain.AccountPosting{{
 				AccountID: a.accountID,
@@ -384,7 +387,7 @@ func TestCommandIdempotencyAndRollbackEndToEnd(t *testing.T) {
 	assertRowCount(t, store.DB(), &accountPostingModel{}, 1)
 
 	// A different fingerprint for the same key is a payload mismatch.
-	_, _, err = repos.Idempotency.Begin(ctx, a.householdID, operation.IdempotencyKey(), domain.RequestFingerprint("different"), operation.ID(), now)
+	_, _, err = repos.Idempotency.Begin(ctx, a.householdID, operation.IdempotencyKey(), domain.RequestFingerprint("d1ff"), operation.ID(), now)
 	wantCode(t, err, domain.CodeIdempotencyKeyPayloadMismatch)
 
 	// A failure after Begin and Append rolls back every write of this command.
@@ -510,18 +513,19 @@ func TestReservationLifecycleAtDatabaseLevel(t *testing.T) {
 }
 
 // TestMigrationSetAppliesIdempotentlyUnderVersionTracking documents and checks
-// the upgrade path for the single reviewed migration. The Goose binary is not a
-// Go dependency here, so this test reproduces Goose's applied-version tracking
-// with a goose_db_version table: the ordered migration set is applied to an
-// empty schema, a second run applies zero versions, returns no error and leaves
-// the schema unchanged.
+// the upgrade path for the reviewed migration set. The Goose binary is not a Go
+// dependency here, so this test reproduces Goose's applied-version tracking with
+// a goose_db_version table: the ordered migration set is applied to an empty
+// schema, a second run applies zero versions, returns no error and leaves the
+// schema unchanged.
 func TestMigrationSetAppliesIdempotentlyUnderVersionTracking(t *testing.T) {
 	store := testStoreWithoutMigration(t)
 	db := store.DB()
 
+	want := migrationFiles(t)
 	applied := applyTrackedMigrationSet(t, db)
-	if len(applied) != 1 {
-		t.Fatalf("first migration run applied %v, want exactly the one reviewed migration", applied)
+	if !reflect.DeepEqual(applied, want) {
+		t.Fatalf("first migration run applied %v, want %v", applied, want)
 	}
 	before := schemaTables(t, db)
 
@@ -578,6 +582,10 @@ func assertReservationHolds(
 			planEnvelope.MinorUnits(), planAccount.MinorUnits(), wantEnvelope.MinorUnits(), wantAccount.MinorUnits())
 	}
 }
+
+// sqlStateRestrictViolation is PostgreSQL's restrict_violation code, raised by
+// ON DELETE RESTRICT (as opposed to 23503 for a NO ACTION foreign key).
+const sqlStateRestrictViolation = "23001"
 
 // wantSQLState asserts err is a PostgreSQL error carrying the wanted SQLSTATE.
 func wantSQLState(t *testing.T, err error, state string) {

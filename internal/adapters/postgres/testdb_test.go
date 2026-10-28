@@ -141,18 +141,74 @@ func applyMigration(t *testing.T, db *gorm.DB) {
 	executeMigrationUp(t, db, readMigrationUp(t, "0001_initial_schema.sql"))
 }
 
-// executeMigrationUp runs every semicolon-separated statement of an Up section.
+// executeMigrationUp runs every statement of an Up section.
 func executeMigrationUp(t *testing.T, db *gorm.DB, up string) {
 	t.Helper()
 
-	for _, statement := range strings.Split(up, ";") {
-		if strings.TrimSpace(statement) == "" {
-			continue
-		}
+	for _, statement := range splitSQLStatements(up) {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatalf("apply migration statement: %v\n%s", err, statement)
 		}
 	}
+}
+
+// splitSQLStatements splits a Goose Up section on statement terminators. It
+// ignores semicolons inside `--` line comments and single-quoted string
+// literals: the migration's prose comments and CHECK constraints contain both,
+// and splitting naively on every semicolon feeds comment fragments to the
+// server as SQL.
+func splitSQLStatements(up string) []string {
+	var statements []string
+	var current strings.Builder
+	inLineComment := false
+	inString := false
+	for i := 0; i < len(up); i++ {
+		c := up[i]
+		if inLineComment {
+			current.WriteByte(c)
+			if c == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inString {
+			current.WriteByte(c)
+			if c == '\'' {
+				if i+1 < len(up) && up[i+1] == '\'' {
+					// A doubled quote is an escaped quote, not the end of the literal.
+					current.WriteByte(up[i+1])
+					i++
+				} else {
+					inString = false
+				}
+			}
+			continue
+		}
+		switch c {
+		case '-':
+			if i+1 < len(up) && up[i+1] == '-' {
+				inLineComment = true
+				current.WriteString("--")
+				i++
+				continue
+			}
+			current.WriteByte(c)
+		case '\'':
+			inString = true
+			current.WriteByte(c)
+		case ';':
+			if statement := strings.TrimSpace(current.String()); statement != "" {
+				statements = append(statements, statement)
+			}
+			current.Reset()
+		default:
+			current.WriteByte(c)
+		}
+	}
+	if statement := strings.TrimSpace(current.String()); statement != "" {
+		statements = append(statements, statement)
+	}
+	return statements
 }
 
 // seed is the standard test fixture: a user, household, cash account and
