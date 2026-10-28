@@ -63,7 +63,12 @@ func testStoreWithoutMigration(t *testing.T) *Store {
 		_ = admin.Exec(fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quoteIdentifier(schema))).Error
 	})
 
-	store, err := Open(withSearchPath(dsn, schema))
+	store, err := Open(withSearchPath(dsn, schema), PoolConfig{
+		MaxOpenConns:    10,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: time.Hour,
+		ConnMaxIdleTime: 15 * time.Minute,
+	})
 	if err != nil {
 		t.Fatalf("open adapter store: %v", err)
 	}

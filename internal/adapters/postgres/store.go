@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -20,15 +21,33 @@ type Store struct {
 	db *gorm.DB
 }
 
-// Open connects to PostgreSQL using the supplied DSN and returns the adapter
-// root.
-func Open(dsn string) (*Store, error) {
+// PoolConfig bounds the database/sql connection pool that GORM uses. The
+// values come from internal/config so the deployment can keep the api inside
+// PostgreSQL's max_connections on a small shared host.
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+}
+
+// Open connects to PostgreSQL using the supplied DSN and pool bounds and
+// returns the adapter root.
+func Open(dsn string, pool PoolConfig) (*Store, error) {
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
 		return nil, err
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(pool.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(pool.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(pool.ConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(pool.ConnMaxIdleTime)
 	return New(db), nil
 }
 

@@ -3,9 +3,12 @@ package deploy
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"family-budget/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,17 +25,33 @@ type composeDocument struct {
 }
 
 type composeService struct {
-	Image       string    `yaml:"image"`
-	Build       *build    `yaml:"build"`
-	Ports       []string  `yaml:"ports"`
-	Expose      []string  `yaml:"expose"`
-	Restart     string    `yaml:"restart"`
-	Volumes     []string  `yaml:"volumes"`
-	Networks    []string  `yaml:"networks"`
-	Environment envMap    `yaml:"environment"`
-	Healthcheck *health   `yaml:"healthcheck"`
-	DependsOn   dependsOn `yaml:"depends_on"`
-	Logging     *logging  `yaml:"logging"`
+	Image       string         `yaml:"image"`
+	Build       *build         `yaml:"build"`
+	Command     []string       `yaml:"command"`
+	Ports       []string       `yaml:"ports"`
+	Expose      []string       `yaml:"expose"`
+	Restart     string         `yaml:"restart"`
+	ShmSize     string         `yaml:"shm_size"`
+	Volumes     []string       `yaml:"volumes"`
+	Networks    []string       `yaml:"networks"`
+	Environment envMap         `yaml:"environment"`
+	Healthcheck *health        `yaml:"healthcheck"`
+	DependsOn   dependsOn      `yaml:"depends_on"`
+	Logging     *logging       `yaml:"logging"`
+	Deploy      *composeDeploy `yaml:"deploy"`
+}
+
+type composeDeploy struct {
+	Resources composeResources `yaml:"resources"`
+}
+
+type composeResources struct {
+	Limits composeLimits `yaml:"limits"`
+}
+
+type composeLimits struct {
+	CPUs   string `yaml:"cpus"`
+	Memory string `yaml:"memory"`
 }
 
 type build struct {
@@ -257,6 +276,148 @@ func TestComposeHealthAndDependencies(t *testing.T) {
 	}
 }
 
+func TestComposeResourceLimits(t *testing.T) {
+	doc := loadCompose(t)
+
+	// Explicit ceilings keep the stack from competing with nginx, Calibre and
+	// the operator's other projects on the shared box. Ranges document the
+	// intent rather than freezing one number forever.
+	cases := []struct {
+		service string
+		minMem  int64
+		maxMem  int64
+	}{
+		{service: "db", minMem: 512 << 20, maxMem: 1 << 30},
+		{service: "api", minMem: 128 << 20, maxMem: 256 << 20},
+		{service: "migrate", minMem: 64 << 20, maxMem: 256 << 20},
+	}
+	for _, tc := range cases {
+		service := requireService(t, doc, tc.service)
+		if service.Deploy == nil {
+			t.Errorf("%s has no deploy.resources limits", tc.service)
+			continue
+		}
+		limits := service.Deploy.Resources.Limits
+		if limits.CPUs == "" {
+			t.Errorf("%s has no CPU limit", tc.service)
+		}
+		if limits.Memory == "" {
+			t.Errorf("%s has no memory limit", tc.service)
+			continue
+		}
+		if _, err := strconv.ParseFloat(limits.CPUs, 64); err != nil {
+			t.Errorf("%s cpus = %q, want a number", tc.service, limits.CPUs)
+		}
+		memory, err := parseMemoryBytes(limits.Memory)
+		if err != nil {
+			t.Errorf("%s memory limit = %q: %v", tc.service, limits.Memory, err)
+			continue
+		}
+		if memory < tc.minMem || memory > tc.maxMem {
+			t.Errorf("%s memory limit = %s, want between %d MiB and %d MiB",
+				tc.service, limits.Memory, tc.minMem>>20, tc.maxMem>>20)
+		}
+	}
+
+	// The database needs shared memory for parallel query; the image default
+	// is only 64 MB.
+	if db := requireService(t, doc, "db"); db.ShmSize == "" {
+		t.Error("db has no shm_size; parallel query needs more than the 64 MB default")
+	}
+}
+
+func TestComposePostgresTuningWired(t *testing.T) {
+	doc := loadCompose(t)
+	db := requireService(t, doc, "db")
+
+	const (
+		hostPath   = "deploy/postgres/99-small-vps.conf"
+		configPath = "/etc/postgresql/99-small-vps.conf"
+	)
+	tuning := readDeployFile(t, filepath.Join("deploy", "postgres", "99-small-vps.conf"))
+
+	mounted := false
+	for _, volume := range db.Volumes {
+		if strings.Contains(volume, hostPath) && strings.Contains(volume, configPath+":ro") {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("db volumes = %v, want a read-only mount of %s at %s", db.Volumes, hostPath, configPath)
+	}
+	if command := strings.Join(db.Command, " "); !strings.Contains(command, "config_file="+configPath) {
+		t.Errorf("db command = %q, want config_file=%s", command, configPath)
+	}
+
+	// The wrapper must load the initdb-generated config so image defaults such
+	// as listen_addresses = '*' survive.
+	if !strings.Contains(tuning, "include = '/var/lib/postgresql/18/docker/postgresql.conf'") {
+		t.Error("tuning file does not include the PostgreSQL 18 initdb-generated postgresql.conf")
+	}
+
+	for _, setting := range []string{
+		"shared_buffers",
+		"effective_cache_size",
+		"work_mem",
+		"maintenance_work_mem",
+		"max_connections",
+		"wal_buffers",
+		"min_wal_size",
+		"max_wal_size",
+		"checkpoint_timeout",
+		"checkpoint_completion_target",
+	} {
+		if !settingAssignment(setting).MatchString(tuning) {
+			t.Errorf("tuning file does not set %s", setting)
+		}
+	}
+
+	maxConnections, ok := settingInt(tuning, "max_connections")
+	if !ok {
+		t.Fatal("cannot parse max_connections from the tuning file")
+	}
+	pool := config.Default().Database
+	if maxConnections < pool.MaxOpenConns {
+		t.Errorf("max_connections = %d, want at least the API pool max %d", maxConnections, pool.MaxOpenConns)
+	}
+	if maxConnections > 30 {
+		t.Errorf("max_connections = %d, want <= 30 on a small shared host", maxConnections)
+	}
+}
+
+func TestComposeAPIRuntimeBounds(t *testing.T) {
+	doc := loadCompose(t)
+	api := requireService(t, doc, "api")
+
+	for _, name := range []string{"GOMEMLIMIT", "GOMAXPROCS"} {
+		value, ok := api.Environment[name]
+		if !ok || value == nil || strings.TrimSpace(*value) == "" {
+			t.Errorf("api environment has no %s; the Go runtime must stay inside the container limit", name)
+		}
+	}
+
+	// The pool env defaults must match internal/config's defaults and fit
+	// inside the documented PostgreSQL max_connections.
+	defaults := config.Default().Database
+	for name, want := range map[string]int{
+		"DATABASE_MAX_OPEN_CONNS": defaults.MaxOpenConns,
+		"DATABASE_MAX_IDLE_CONNS": defaults.MaxIdleConns,
+	} {
+		raw, ok := api.Environment[name]
+		if !ok || raw == nil {
+			t.Errorf("api environment has no %s", name)
+			continue
+		}
+		value := *raw
+		if literal := defaultLiteral(value); literal != "" {
+			got, err := strconv.Atoi(literal)
+			if err != nil || got != want {
+				t.Errorf("api %s default = %q, want %d", name, value, want)
+			}
+		}
+	}
+}
+
 func TestNoCaddyfileOrCaddyReferences(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", caddyfilePath)); !os.IsNotExist(err) {
 		t.Errorf("Caddyfile must not exist (os.Stat err = %v)", err)
@@ -318,4 +479,57 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// settingAssignment matches a PostgreSQL assignment such as `work_mem = 4MB`.
+func settingAssignment(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*=\s*\S+`)
+}
+
+// settingInt parses an integer PostgreSQL assignment from a tuning file.
+func settingInt(content, name string) (int, bool) {
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*=\s*(\d+)\s*(?:#.*)?$`)
+	match := pattern.FindStringSubmatch(content)
+	if match == nil {
+		return 0, false
+	}
+	value, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+// defaultLiteral extracts the fallback from a `${VAR:-literal}` compose value.
+func defaultLiteral(value string) string {
+	index := strings.Index(value, ":-")
+	if index < 0 {
+		return ""
+	}
+	return strings.TrimSuffix(value[index+2:], "}")
+}
+
+// parseMemoryBytes converts a Compose memory value such as 768m or 1g to bytes.
+func parseMemoryBytes(value string) (int64, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	multiplier := int64(1)
+	for _, unit := range []struct {
+		suffix     string
+		multiplier int64
+	}{
+		{"kib", 1 << 10}, {"mib", 1 << 20}, {"gib", 1 << 30},
+		{"kb", 1000}, {"mb", 1000 * 1000}, {"gb", 1000 * 1000 * 1000},
+		{"k", 1 << 10}, {"m", 1 << 20}, {"g", 1 << 30},
+	} {
+		if strings.HasSuffix(normalized, unit.suffix) {
+			normalized = strings.TrimSuffix(normalized, unit.suffix)
+			multiplier = unit.multiplier
+			break
+		}
+	}
+	number, err := strconv.ParseFloat(normalized, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(number * float64(multiplier)), nil
 }

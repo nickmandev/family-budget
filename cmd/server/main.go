@@ -40,7 +40,7 @@ type database interface {
 // diagnostic sink. Production uses the defaults in main; tests replace them.
 type runDeps struct {
 	loadConfig   func() (config.Config, error)
-	openDatabase func(string) (database, error)
+	openDatabase func(config.Config) (database, error)
 	stderr       io.Writer
 }
 
@@ -49,9 +49,16 @@ func main() {
 	defer stop()
 
 	err := run(ctx, runDeps{
-		loadConfig:   config.Load,
-		openDatabase: func(dsn string) (database, error) { return postgres.Open(dsn) },
-		stderr:       os.Stderr,
+		loadConfig: config.Load,
+		openDatabase: func(cfg config.Config) (database, error) {
+			return postgres.Open(cfg.DatabaseURL, postgres.PoolConfig{
+				MaxOpenConns:    cfg.Database.MaxOpenConns,
+				MaxIdleConns:    cfg.Database.MaxIdleConns,
+				ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+				ConnMaxIdleTime: cfg.Database.ConnMaxIdleTime,
+			})
+		},
+		stderr: os.Stderr,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -79,7 +86,7 @@ func run(ctx context.Context, deps runDeps) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(deps.stderr, nil))
 
-	db, err := deps.openDatabase(cfg.DatabaseURL)
+	db, err := deps.openDatabase(cfg)
 	if err != nil {
 		return fmt.Errorf("connect to database %s: %s", databaseTarget(cfg.DatabaseURL), sanitizeError(err, cfg.DatabaseURL))
 	}

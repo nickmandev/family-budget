@@ -41,6 +41,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Auth.RateLimitMax != defaults.Auth.RateLimitMax {
 		t.Errorf("rate limit max = %d, want %d", cfg.Auth.RateLimitMax, defaults.Auth.RateLimitMax)
 	}
+	if cfg.Database != defaults.Database {
+		t.Errorf("database pool = %+v, want %+v", cfg.Database, defaults.Database)
+	}
 }
 
 func TestLoadFromOverrides(t *testing.T) {
@@ -56,6 +59,10 @@ func TestLoadFromOverrides(t *testing.T) {
 	environment[EnvSessionTTL] = "24h"
 	environment[EnvRateLimitMax] = "5"
 	environment[EnvRateLimitWindow] = "2m"
+	environment[EnvDatabaseMaxOpenConns] = "7"
+	environment[EnvDatabaseMaxIdleConns] = "3"
+	environment[EnvDatabaseConnMaxLifetime] = "30m"
+	environment[EnvDatabaseConnMaxIdleTime] = "5m"
 
 	cfg, err := LoadFrom(lookupFrom(environment))
 	if err != nil {
@@ -81,6 +88,10 @@ func TestLoadFromOverrides(t *testing.T) {
 	}
 	if cfg.Auth.RateLimitMax != 5 || cfg.Auth.RateLimitWindow != 2*time.Minute {
 		t.Errorf("rate limit = %d/%v", cfg.Auth.RateLimitMax, cfg.Auth.RateLimitWindow)
+	}
+	wantPool := DatabaseConfig{MaxOpenConns: 7, MaxIdleConns: 3, ConnMaxLifetime: 30 * time.Minute, ConnMaxIdleTime: 5 * time.Minute}
+	if cfg.Database != wantPool {
+		t.Errorf("database pool = %+v, want %+v", cfg.Database, wantPool)
 	}
 }
 
@@ -112,6 +123,13 @@ func TestLoadFromRejectsInvalidEnvironment(t *testing.T) {
 		{name: "session ttl negative", variable: EnvSessionTTL, value: "-1h"},
 		{name: "rate limit zero", variable: EnvRateLimitMax, value: "0"},
 		{name: "rate window zero", variable: EnvRateLimitWindow, value: "0s"},
+		{name: "pool open zero", variable: EnvDatabaseMaxOpenConns, value: "0"},
+		{name: "pool open too high", variable: EnvDatabaseMaxOpenConns, value: "101"},
+		{name: "pool idle negative", variable: EnvDatabaseMaxIdleConns, value: "-1"},
+		{name: "pool idle above open", variable: EnvDatabaseMaxIdleConns, value: "11"},
+		{name: "pool lifetime too short", variable: EnvDatabaseConnMaxLifetime, value: "30s"},
+		{name: "pool lifetime not a duration", variable: EnvDatabaseConnMaxLifetime, value: "forever"},
+		{name: "pool idle time too short", variable: EnvDatabaseConnMaxIdleTime, value: "30s"},
 	}
 
 	for _, test := range tests {

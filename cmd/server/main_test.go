@@ -85,7 +85,7 @@ func TestRunRejectsMissingDatabaseURL(t *testing.T) {
 		loadConfig: func() (config.Config, error) {
 			return config.LoadFrom(func(string) (string, bool) { return "", false })
 		},
-		openDatabase: func(string) (database, error) {
+		openDatabase: func(config.Config) (database, error) {
 			opened = true
 			return &fakeDatabase{}, nil
 		},
@@ -107,7 +107,7 @@ func TestRunRedactsDatabaseCredentialsOnOpenFailure(t *testing.T) {
 			cfg.DatabaseURL = dsn
 			return cfg, nil
 		},
-		openDatabase: func(string) (database, error) {
+		openDatabase: func(config.Config) (database, error) {
 			return nil, errors.New("dial failed: " + dsn + " password=supersecret")
 		},
 		stderr: io.Discard,
@@ -135,7 +135,7 @@ func TestRunClosesDatabaseWhenPingFails(t *testing.T) {
 
 	err := run(context.Background(), runDeps{
 		loadConfig:   func() (config.Config, error) { return cfg, nil },
-		openDatabase: func(string) (database, error) { return db, nil },
+		openDatabase: func(config.Config) (database, error) { return db, nil },
 		stderr:       io.Discard,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not reachable") {
@@ -189,7 +189,7 @@ func TestRunShutsDownOnContextCancel(t *testing.T) {
 	go func() {
 		done <- run(ctx, runDeps{
 			loadConfig:   func() (config.Config, error) { return cfg, nil },
-			openDatabase: func(string) (database, error) { return db, nil },
+			openDatabase: func(config.Config) (database, error) { return db, nil },
 			stderr:       io.Discard,
 		})
 	}()

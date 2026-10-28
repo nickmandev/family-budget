@@ -22,7 +22,16 @@ import (
 // documentation can refer to one canonical list.
 const (
 	EnvDatabaseURL = "DATABASE_URL"
-	EnvPort        = "PORT"
+
+	// Connection-pool bounds for the api process. They are deliberately below
+	// PostgreSQL's max_connections (deploy/postgres/99-small-vps.conf) so the
+	// application, migrations and admin sessions all fit on a small host.
+	EnvDatabaseMaxOpenConns    = "DATABASE_MAX_OPEN_CONNS"
+	EnvDatabaseMaxIdleConns    = "DATABASE_MAX_IDLE_CONNS"
+	EnvDatabaseConnMaxLifetime = "DATABASE_CONN_MAX_LIFETIME"
+	EnvDatabaseConnMaxIdleTime = "DATABASE_CONN_MAX_IDLE_TIME"
+
+	EnvPort = "PORT"
 
 	EnvHTTPReadHeaderTimeout = "HTTP_READ_HEADER_TIMEOUT"
 	EnvHTTPReadTimeout       = "HTTP_READ_TIMEOUT"
@@ -48,8 +57,19 @@ type Config struct {
 	// DatabaseURL is the PostgreSQL DSN. It is required for the server binary
 	// and must be a postgres:// or postgresql:// URL.
 	DatabaseURL string
+	Database    DatabaseConfig
 	HTTP        HTTPConfig
 	Auth        AuthConfig
+}
+
+// DatabaseConfig holds the database/sql connection-pool bounds. They keep the
+// api process from opening more connections than PostgreSQL is tuned to serve
+// on a small shared VPS.
+type DatabaseConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
 }
 
 // HTTPConfig holds transport limits and timeouts.
@@ -92,6 +112,15 @@ type Argon2Config struct {
 // used to justify them.
 func Default() Config {
 	return Config{
+		// Ten open connections is well below the 25 max_connections in the
+		// shipped PostgreSQL tuning file, leaving room for migrations, the
+		// healthcheck and an operator psql session.
+		Database: DatabaseConfig{
+			MaxOpenConns:    10,
+			MaxIdleConns:    5,
+			ConnMaxLifetime: time.Hour,
+			ConnMaxIdleTime: 15 * time.Minute,
+		},
 		HTTP: HTTPConfig{
 			Port:              8080,
 			ReadHeaderTimeout: 5 * time.Second,
@@ -147,6 +176,24 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 		add("%s is invalid: %v", EnvDatabaseURL, err)
 	} else {
 		cfg.DatabaseURL = dsn
+	}
+
+	cfg.Database.MaxOpenConns = lookupInt(lookup, EnvDatabaseMaxOpenConns, cfg.Database.MaxOpenConns, add)
+	cfg.Database.MaxIdleConns = lookupInt(lookup, EnvDatabaseMaxIdleConns, cfg.Database.MaxIdleConns, add)
+	cfg.Database.ConnMaxLifetime = lookupDuration(lookup, EnvDatabaseConnMaxLifetime, cfg.Database.ConnMaxLifetime, add)
+	cfg.Database.ConnMaxIdleTime = lookupDuration(lookup, EnvDatabaseConnMaxIdleTime, cfg.Database.ConnMaxIdleTime, add)
+
+	if cfg.Database.MaxOpenConns < 1 || cfg.Database.MaxOpenConns > 100 {
+		add("%s must be between 1 and 100", EnvDatabaseMaxOpenConns)
+	}
+	if cfg.Database.MaxIdleConns < 0 || cfg.Database.MaxIdleConns > cfg.Database.MaxOpenConns {
+		add("%s must be between 0 and %s", EnvDatabaseMaxIdleConns, EnvDatabaseMaxOpenConns)
+	}
+	if cfg.Database.ConnMaxLifetime < time.Minute || cfg.Database.ConnMaxLifetime > 24*time.Hour {
+		add("%s must be between 1m and 24h", EnvDatabaseConnMaxLifetime)
+	}
+	if cfg.Database.ConnMaxIdleTime < time.Minute || cfg.Database.ConnMaxIdleTime > 24*time.Hour {
+		add("%s must be between 1m and 24h", EnvDatabaseConnMaxIdleTime)
 	}
 
 	cfg.HTTP.Port = lookupInt(lookup, EnvPort, cfg.HTTP.Port, add)

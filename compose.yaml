@@ -41,8 +41,24 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
     # PostgreSQL 18 moved PGDATA under /var/lib/postgresql (not .../data).
+    #
+    # Runtime tuning: the mounted file loads the initdb-generated
+    # PGDATA/postgresql.conf (which keeps listen_addresses = '*') and then
+    # overrides a handful of settings sized for a small shared VPS. It is
+    # passed as config_file rather than dropped in conf.d because the official
+    # image's generated config has no include_dir. Editing the file and
+    # reloading applies reloadable settings; shared_buffers/max_connections
+    # need a container restart. See deploy/postgres/README.md.
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/99-small-vps.conf"
+    # Parallel query uses /dev/shm. 128 MB matches shared_buffers and is enough
+    # for a household workload; the image default is only 64 MB.
+    shm_size: 128mb
     volumes:
       - pgdata:/var/lib/postgresql
+      - ./deploy/postgres/99-small-vps.conf:/etc/postgresql/99-small-vps.conf:ro
     networks:
       - backend
     # Internal-only advertisement; never a host `ports:` mapping.
@@ -55,11 +71,14 @@ services:
       retries: 5
       start_period: 30s
     logging: *default-logging
+    # 768 MiB ceiling: 128 MiB shared_buffers + up to 3 autovacuum workers at
+    # 64 MiB maintenance_work_mem + 25 backends + WAL/OS overhead. The tuned
+    # settings target roughly 250-450 MiB steady state, leaving host headroom.
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1g
+          cpus: "0.75"
+          memory: 768m
 
   # One-shot schema runner. The API never migrates on startup
   # (cmd/server/main.go); reviewed Goose migrations are the schema authority.
@@ -82,7 +101,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
+          cpus: "0.25"
           memory: 256m
 
   api:
@@ -95,6 +114,15 @@ services:
     # config.Default so a minimal .env still starts.
     environment:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      # Bounded pool, well inside PostgreSQL's max_connections = 25.
+      DATABASE_MAX_OPEN_CONNS: ${DATABASE_MAX_OPEN_CONNS:-10}
+      DATABASE_MAX_IDLE_CONNS: ${DATABASE_MAX_IDLE_CONNS:-5}
+      DATABASE_CONN_MAX_LIFETIME: ${DATABASE_CONN_MAX_LIFETIME:-1h}
+      DATABASE_CONN_MAX_IDLE_TIME: ${DATABASE_CONN_MAX_IDLE_TIME:-15m}
+      # Soft Go heap ceiling below the 256 MiB container limit, and a scheduler
+      # width matched to the API's CPU budget.
+      GOMEMLIMIT: ${GOMEMLIMIT:-192MiB}
+      GOMAXPROCS: ${GOMAXPROCS:-2}
       PORT: ${PORT:-8080}
       HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
       HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
@@ -132,11 +160,14 @@ services:
       retries: 5
       start_period: 20s
     logging: *default-logging
+    # 256 MiB ceiling with GOMEMLIMIT=192MiB: static Go binary ~20 MiB, request
+    # buffers <=1 MiB each and one 64 MiB Argon2id hash at a time. The 0.75 CPU
+    # ceiling keeps login hashing and normal traffic from starving the host.
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 512m
+          cpus: "0.75"
+          memory: 256m
 
 networks:
   # No route to the outside world; db lives here only.
