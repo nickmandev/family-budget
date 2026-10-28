@@ -6,24 +6,28 @@ Production deployment of the family-budget API. The decisions come from
 ## Stack overview
 
 ```
-internet ──> caddy :80/:443 ──> api :8080 ──> db :5432 (PostgreSQL)
-                                  │              │
-                                  └── migrate ───┘ (one-shot goose up)
+internet ──> nginx :80/:443 (host, Let's Encrypt)
+                  │
+                  └─ 127.0.0.1:8080 ──> api :8080 ──> db :5432 (PostgreSQL)
+                                             │              │
+                                             └── migrate ───┘ (one-shot goose up)
 ```
 
 | Service   | Image                        | Network(s)        | Host ports | Restart         |
 |-----------|------------------------------|-------------------|------------|-----------------|
-| `caddy`   | `caddy:2.11.7`               | `frontend`        | 80, 443     | `unless-stopped`|
-| `api`     | `family-budget/api:1.0.0`    | `backend`, `frontend` | none    | `unless-stopped`|
+| `api`     | `family-budget/api:1.0.0`    | `backend`, `frontend` | `127.0.0.1:8080` (loopback only) | `unless-stopped`|
 | `migrate` | `family-budget/migrate:1.0.0`| `backend`         | none       | one-shot (`"no"`)|
 | `db`      | `postgres:18.6`              | `backend` (internal) | none    | `unless-stopped`|
 
 - `backend` is an `internal: true` Compose network. PostgreSQL is attached only
   to it, publishes no host port, and has no outbound route.
-- `frontend` carries only Caddy ↔ API traffic.
+- `frontend` is a non-internal network used only by `api` so the loopback port
+  publish is reliable; it carries no other service.
+- The host's existing nginx is the sole public listener (80/443) and proxies to
+  the API's loopback binding. No proxy runs inside the Compose stack.
 - Named volumes: `pgdata` (PostgreSQL data, mounted at
-  `/var/lib/postgresql` — PostgreSQL 18's data root), `caddy_data` and
-  `caddy_config` (certificates and Caddy state).
+  `/var/lib/postgresql` — PostgreSQL 18's data root). There is no proxy state
+  volume; TLS material stays in the host's `/etc/letsencrypt`.
 
 ### Image pinning policy
 
@@ -35,7 +39,6 @@ current pins were chosen from the stable releases available at authoring time:
 | `golang:1.25.14-bookworm` | Builder only; same Go minor as the module (`go 1.25.6`). |
 | `alpine:3.24.3` | Minimal runtime; provides CA certificates and busybox `wget` for the API health probe. |
 | `postgres:18.6` | Current PostgreSQL 18 stable minor (PLATFORM_DECISIONS §D requires 18.x with an explicit pin). |
-| `caddy:2.11.7` | Current Caddy 2.x stable; automatic TLS. |
 | goose `v3.27.3` | Built from source in the Dockerfile (last release compatible with Go 1.25). |
 
 `family-budget/api:1.0.0` and `family-budget/migrate:1.0.0` are local
@@ -48,10 +51,12 @@ major upgrades require a dump/restore, not just a tag bump.
 ## Prerequisites
 
 - Docker Engine with Compose v2 (`docker compose version`).
-- A DNS `A`/`AAAA` record for `DOMAIN` pointing at the VPS.
-- Host firewall allowing SSH plus inbound TCP 80 and 443 (and UDP 443 only if
-  HTTP/3 is desired).
-- Repository checkout on the host and permission to bind ports 80/443.
+- A DNS `A`/`AAAA` record for the chosen subdomain pointing at the VPS.
+- nginx and certbot already installed and serving the operator's other projects
+  on this host, with Let's Encrypt certificates and renewal as usual.
+- Host firewall allowing SSH plus nginx's inbound TCP 80 and 443 (and UDP 443
+  only if HTTP/3 is desired).
+- Repository checkout on the host. No container binds a public port.
 
 ## First run
 
@@ -67,31 +72,47 @@ major upgrades require a dump/restore, not just a tag bump.
      `openssl rand -base64 32`.
    - Set the same password inside `DATABASE_URL`, percent-encoding URL-special
      characters (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `#` → `%23`).
-   - Set `DOMAIN` to the real hostname and `ACME_EMAIL` to the certificate
-     contact address.
+   - Optionally set `API_HOST_PORT` (default `8080`); keep it in sync with the
+     `proxy_pass` line in the nginx snippet.
+   - The public hostname is not app configuration: it lives in the nginx
+     `server_name` and in the Let's Encrypt certificate for the subdomain.
    - Keep `.env` out of source control (it is already git-ignored) and never
      copy it into an image.
 
-3. Check interpolation before starting anything:
+3. Install the nginx front door and certificate for the subdomain, exactly as
+   for the operator's other projects on this host:
+
+   ```sh
+   # Replace budget.example.com (CHANGE-ME) in the snippet first.
+   sudo cp deploy/nginx/family-budget.conf /etc/nginx/sites-available/
+   sudo ln -s /etc/nginx/sites-available/family-budget.conf \
+       /etc/nginx/sites-enabled/family-budget.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d budget.example.com
+   ```
+
+   nginx returns 502 until the API is started below; that is expected.
+
+4. Check interpolation before starting anything:
 
    ```sh
    docker compose config
    ```
 
-4. Build the application images:
+5. Build the application images:
 
    ```sh
    docker compose build
    ```
 
-5. Start PostgreSQL and wait for it to become healthy:
+6. Start PostgreSQL and wait for it to become healthy:
 
    ```sh
    docker compose up -d db
    docker compose ps
    ```
 
-6. Apply the schema explicitly. The API binary never migrates on startup
+7. Apply the schema explicitly. The API binary never migrates on startup
    (`cmd/server/main.go`); the reviewed Goose files in `migrations/` are the
    schema authority:
 
@@ -100,27 +121,29 @@ major upgrades require a dump/restore, not just a tag bump.
    docker compose run --rm migrate status   # verify applied versions
    ```
 
-7. Start the remaining services:
+8. Start the remaining services:
 
    ```sh
    docker compose up -d
    ```
 
    `migrate` runs again as a one-shot service (Goose `up` is idempotent), then
-   `api` starts only after it exits successfully, and Caddy starts only after
-   `/readyz` succeeds.
+   `api` starts only after it exits successfully and its `/readyz` healthcheck
+   passes. nginx proxies to it on the loopback port.
 
-8. Verify:
+9. Verify:
 
    ```sh
    docker compose ps
-   curl -fsS https://"$DOMAIN"/healthz
-   curl -fsS https://"$DOMAIN"/readyz
-   curl -sSI https://"$DOMAIN" | grep -i strict-transport-security
+   curl -fsS http://127.0.0.1:8080/readyz          # API directly, loopback
+   curl -fsS https://budget.example.com/healthz    # through nginx
+   curl -fsS https://budget.example.com/readyz
+   curl -sSI https://budget.example.com | grep -i strict-transport-security
    ```
 
    `/healthz` is liveness (process only). `/readyz` pings PostgreSQL and is the
-   probe used by Compose and by Caddy's dependency ordering.
+   probe used by Compose's healthcheck. The HTTPS checks confirm the host nginx
+   and its Let's Encrypt certificate are the working front door.
 
 ## Routine operations
 
@@ -128,8 +151,11 @@ major upgrades require a dump/restore, not just a tag bump.
   service). Application logs are structured JSON with request IDs; secrets and
   request bodies are not logged.
 - Restart: `docker compose restart api` or `docker compose up -d` after a
-  rebuild. Caddy and the API receive SIGTERM and shut down gracefully within
+  rebuild. The API receives SIGTERM and shuts down gracefully within
   `HTTP_SHUTDOWN_TIMEOUT` (default 10s).
+- Front door: hostname/certificate changes are `sudo nginx -t &&
+  sudo systemctl reload nginx`. Certificate issuance and renewal stay in the
+  host's existing certbot flow; the Compose stack does not manage TLS.
 - Migrations: `docker compose run --rm migrate status` to inspect;
   `docker compose run --rm migrate up` to apply. Treat `down` as destructive
   and review the migration first.
@@ -138,30 +164,33 @@ major upgrades require a dump/restore, not just a tag bump.
   Rotating the PostgreSQL role password inside a running database is a planned
   operational step; do not assume editing `.env` changes it.
 - Resource limits (`deploy.resources.limits`): db 1 CPU / 1 GB, api 1 CPU /
-  512 MB, migrate 0.5 CPU / 256 MB, caddy 0.5 CPU / 128 MB. Adjust for the VPS
-  size and watch for OOM kills.
+  512 MB, migrate 0.5 CPU / 256 MB. Adjust for the VPS size and watch for OOM
+  kills.
 
 ## Security posture
 
-- Only Caddy publishes host ports (80/443). PostgreSQL's 5432 is reachable
-  only from the internal `backend` network.
+- Only the host nginx listens publicly (80/443). The API is published on
+  `127.0.0.1:8080` (loopback) so only the host nginx can reach it; PostgreSQL's
+  5432 is reachable only from the internal `backend` network.
 - Containers run as non-root: the API and migrate images use numeric UID
   10001. `migrate` needs no writable filesystem.
 - Secrets live only in the git-ignored `.env` (mode 600) and never in the
   Compose file, image layers or build context (`.dockerignore` excludes
   `.env*`). Only `db` receives `POSTGRES_PASSWORD`; only `api`/`migrate`
-  receive `DATABASE_URL`; Caddy receives neither.
-- Caddy provisions TLS automatically and sets HSTS, `X-Content-Type-Options`,
-  `X-Frame-Options`, `Referrer-Policy` and `Cross-Origin-Opener-Policy`.
+  receive `DATABASE_URL`; no proxy container receives database credentials.
+- nginx terminates TLS with the operator's existing Let's Encrypt certificate
+  and sets HSTS, `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy` and `Cross-Origin-Opener-Policy` (same header set as the
+  earlier reverse-proxy proposal).
 - Keep the host patched, use key-based SSH and a host firewall. Rebuild images
   after base-image security updates.
 
 ## Static checks
 
 `deploy/` contains Go tests that statically validate the Dockerfile, Compose
-file, Caddyfile and `.env.example` (pinned images, multi-stage build, non-root
-user, private database, ordered migrations, log rotation, named volumes).
-They are guards, not container builds:
+file, nginx snippet and `.env.example` (pinned images, multi-stage build,
+non-root user, private database, loopback-only API, ordered migrations, log
+rotation, named volumes). They are guards, not container builds:
 
 ```sh
 go test ./deploy/...

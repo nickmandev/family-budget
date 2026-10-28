@@ -15,7 +15,7 @@
 - Docker Compose runs the Go API and PostgreSQL.
 - PostgreSQL uses a persistent volume on a private Compose network; do not publish its port publicly.
 - Expose only the reverse proxy's HTTPS port and carefully restricted SSH access.
-- Caddy is the proposed low-maintenance reverse proxy for automatic TLS, pending implementation confirmation.
+- The API is fronted by the operator's existing nginx with Let's Encrypt on the shared Hetzner VPS. The API container is published on loopback only (`127.0.0.1:8080`); no new public ports are opened — only nginx's existing 80/443. A drop-in server block lives in `deploy/nginx/family-budget.conf`.
 - Pin container image versions; avoid floating `latest` tags in production.
 - Keep secrets out of source control and image layers. Restrict permissions on deployment secret files and rotate credentials if exposure is suspected.
 - Apply host/container security updates. Run the application as non-root where practical. Configure restart policy, graceful shutdown, health checks and log rotation.
@@ -34,7 +34,7 @@
 - Monitor disk capacity, database availability, app restart loops and backup freshness.
 
 ## Open deployment choices
-- DNS/domain and reverse-proxy confirmation (Caddy is proposed).
+- DNS/domain (the reverse proxy is resolved: existing nginx + Let's Encrypt).
 - Off-host backup target and retention.
 - RPO/RTO and restore drill cadence.
 - Monitoring/alerting provider.

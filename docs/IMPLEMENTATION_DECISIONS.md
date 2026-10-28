@@ -87,6 +87,14 @@ This document records product-owner-approved resolutions to questions the canoni
 
 **Test impact.** Retry with same key posts once; two equal-looking separate entries both post.
 
+## Reverse proxy and TLS (resolved by owner, 2026-10-27)
+
+**Rule.** The API is fronted by the operator's existing nginx with Let's Encrypt on the shared Hetzner VPS. The API container is published on loopback only (`127.0.0.1:8080`); nginx is the sole public listener on ports 80/443. The earlier Caddy proposal is dropped. A drop-in server block lives in `deploy/nginx/family-budget.conf`.
+
+**Rationale.** The owner already operates nginx + Let's Encrypt for other projects on this host. A second ACME client would contend for ports 80/443 and the HTTP-01 challenge, adding a failure mode for no benefit.
+
+**Test impact.** Deployment static guards assert the loopback-only API binding, the absence of a `Caddyfile` and the shape of the nginx snippet. Container/TLS verification happens on the host.
+
 ## Backup, restore and operations (resolved by implementation)
 
 These are implementation-level proposals that satisfy the operational

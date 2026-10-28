@@ -26,5 +26,4 @@ docs
 deploy
 docker-compose.yml
 compose.yaml
-Caddyfile
 Dockerfile

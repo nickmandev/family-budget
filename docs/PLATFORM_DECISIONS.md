@@ -49,14 +49,14 @@
 ## F. Deployment and operations — Hetzner VPS
 - **Target:** self-hosted deployment on a Hetzner VPS.
 - Use Docker Compose for the Go API and PostgreSQL. Keep PostgreSQL on a private Compose network and do not publish its port to the public interface.
-- Terminate HTTPS at a reverse proxy. Caddy is a reasonable proposed default, but exact reverse-proxy choice remains open until implementation planning.
+- Terminate HTTPS at a reverse proxy. **Confirmed:** the operator's existing nginx on the shared Hetzner VPS terminates TLS with its Let's Encrypt certificate. The API container is published on loopback only (`127.0.0.1:8080`) and a drop-in server block lives in `deploy/nginx/family-budget.conf`. The earlier Caddy proposal is dropped.
 - Expose only required public ports. Use a host firewall, key-based SSH, timely security updates and least-privilege service accounts.
 - Keep secrets out of source control and container images. Restrict permissions on deployment secret files; never log secrets.
 - Persist PostgreSQL data on a durable volume and set resource/log rotation limits.
 - Backups must be encrypted and copied off the VPS to a separate failure domain. A backup on the VPS itself is not an off-host backup. Select a target and document encryption-key custody and retention.
 - Document and test restoration to a clean database/host before production. Define RPO/RTO and recovery steps.
 - Provide liveness/readiness checks, structured redacted logs, and basic monitoring/alerts for service health, disk capacity and backup freshness.
-- **Still open:** reverse proxy, off-host backup target and retention, RPO/RTO, monitoring/alerting provider, DNS/domain, and whether a staging environment is warranted.
+- **Still open:** off-host backup target and retention, RPO/RTO, monitoring/alerting provider, DNS/domain, and whether a staging environment is warranted.
 
 ## Confirmation scope
 

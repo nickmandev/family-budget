@@ -223,8 +223,10 @@ scripts, Compose topology or PostgreSQL major version.
 1. **Schedule a window** and note the start time. Prefer a fresh VPS or a
    separate directory/stack so production is untouched.
 2. **Provision a clean stack:** clone the repository, `cp .env.example .env`,
-   set a **new** `POSTGRES_PASSWORD`/`DATABASE_URL` and `DOMAIN`, `chmod 600
-   .env`, then `docker compose config` and `docker compose build`.
+   set a **new** `POSTGRES_PASSWORD`/`DATABASE_URL` and, if the subdomain
+   changes, update the nginx `server_name` and certificate (see
+   `deploy/nginx/`), `chmod 600 .env`, then `docker compose config` and
+   `docker compose build`.
 3. **Start only PostgreSQL:** `docker compose up -d db` and wait for healthy
    (`docker compose ps`).
 4. **Get the artifact:** either copy it from the Storage Box or let the script
@@ -248,11 +250,16 @@ scripts, Compose topology or PostgreSQL major version.
    - Stop writes on the old host: `docker compose stop api`.
    - Take one final backup of the old host if it is still readable.
    - If staying on the same VPS: `scripts/restore.sh` already recreates the
-     database and starts `api`; confirm `caddy` is up and serves HTTPS.
-   - If moving hosts: point DNS at the new VPS (or move the stack), keep the
-     `caddy_data` volume or let Caddy re-issue the certificate, then
+     database and starts `api`; confirm the loopback API responds
+     (`curl -fsS http://127.0.0.1:8080/readyz`) and nginx serves HTTPS
+     (`sudo nginx -t && sudo systemctl reload nginx`).
+   - If moving hosts: point DNS at the new VPS (or move the stack), then
+     issue/renew the Let's Encrypt certificate in the existing certbot flow
+     (`sudo certbot --nginx -d budget.example.com`) and reload nginx
+     (`sudo nginx -t && sudo systemctl reload nginx`), then
      `docker compose up -d`.
-   - Verify `https://$DOMAIN/healthz`, `/readyz`, HSTS and the UI/API.
+   - Verify `https://budget.example.com/healthz`, `/readyz`, HSTS and the
+     UI/API.
    - Keep the old host read-only for 24–72 hours, then decommission it.
 9. **Record the drill** in the log template and fix anything that surprised
    you. A failed drill is a successful finding; do not mark it passed.
@@ -295,7 +302,7 @@ A green backup command is not enough; these signals must reach a human:
 | Backup failure | No new recovery point | systemd `OnFailure=` unit or cron `||` branch pings the failure URL; also `MAILTO` for cron. |
 | Stale backup age | The timer silently stopped | Dead-man's-switch check (for example healthchecks.io) with a 6-hour period and a 1-hour grace; no ping means an alert. |
 | Low disk space | PostgreSQL and WAL stop accepting writes | Daily systemd timer checks `df` and pings only when free space drops below 15% (or on error). |
-| Service health | API/DB outage or restart loop | External HTTP check on `https://$DOMAIN/readyz` every 5 minutes. |
+| Service health | API/DB outage or restart loop | External HTTP check on `https://budget.example.com/readyz` every 5 minutes. |
 
 **Selected default:** [healthchecks.io](https://healthchecks.io/) free tier
 (≈20 checks, email/webhook alerts, **€0**) for backup success/failure, stale
