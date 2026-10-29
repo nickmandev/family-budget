@@ -79,7 +79,7 @@ func (stubMemberships) Save(context.Context, domain.HouseholdId, ports.Membershi
 	return nil
 }
 
-func TestRunRejectsMissingDatabaseURL(t *testing.T) {
+func TestRunRejectsMissingDatabaseComponents(t *testing.T) {
 	opened := false
 	err := run(context.Background(), runDeps{
 		loadConfig: func() (config.Config, error) {
@@ -91,22 +91,35 @@ func TestRunRejectsMissingDatabaseURL(t *testing.T) {
 		},
 		stderr: io.Discard,
 	})
-	if err == nil || !strings.Contains(err.Error(), config.EnvDatabaseURL) {
-		t.Fatalf("error = %v, want %s validation failure", err, config.EnvDatabaseURL)
+	if err == nil || !strings.Contains(err.Error(), config.EnvDatabaseHost) {
+		t.Fatalf("error = %v, want %s validation failure", err, config.EnvDatabaseHost)
 	}
 	if opened {
 		t.Fatal("database was opened despite invalid configuration")
 	}
 }
 
+// validConfig returns a config with a complete, deliberately secret-bearing
+// database component set.
+func validConfig() config.Config {
+	cfg := config.Default()
+	cfg.Database.Host = "db.example"
+	cfg.Database.Port = 5432
+	cfg.Database.User = "budget"
+	cfg.Database.Password = "supersecret"
+	cfg.Database.Name = "family"
+	cfg.Database.SSLMode = "disable"
+	return cfg
+}
+
 func TestRunRedactsDatabaseCredentialsOnOpenFailure(t *testing.T) {
-	const dsn = "postgres://budget:supersecret@db.example:5432/family?sslmode=disable"
-	err := run(context.Background(), runDeps{
-		loadConfig: func() (config.Config, error) {
-			cfg := config.Default()
-			cfg.DatabaseURL = dsn
-			return cfg, nil
-		},
+	cfg := validConfig()
+	dsn, err := cfg.Database.DSN()
+	if err != nil {
+		t.Fatalf("DSN: %v", err)
+	}
+	err = run(context.Background(), runDeps{
+		loadConfig: func() (config.Config, error) { return cfg, nil },
 		openDatabase: func(config.Config) (database, error) {
 			return nil, errors.New("dial failed: " + dsn + " password=supersecret")
 		},
@@ -128,12 +141,15 @@ func TestRunRedactsDatabaseCredentialsOnOpenFailure(t *testing.T) {
 }
 
 func TestRunClosesDatabaseWhenPingFails(t *testing.T) {
-	cfg := config.Default()
-	cfg.DatabaseURL = "postgres://budget:supersecret@db.example/family"
+	cfg := validConfig()
 	cfg.HTTP.Port = 0
-	db := &fakeDatabase{pingErr: errors.New("ping " + cfg.DatabaseURL)}
+	dsn, err := cfg.Database.DSN()
+	if err != nil {
+		t.Fatalf("DSN: %v", err)
+	}
+	db := &fakeDatabase{pingErr: errors.New("ping " + dsn)}
 
-	err := run(context.Background(), runDeps{
+	err = run(context.Background(), runDeps{
 		loadConfig:   func() (config.Config, error) { return cfg, nil },
 		openDatabase: func(config.Config) (database, error) { return db, nil },
 		stderr:       io.Discard,
@@ -178,8 +194,7 @@ func TestBuildServerWiresFullAPISurfaceWithoutDatabase(t *testing.T) {
 }
 
 func TestRunShutsDownOnContextCancel(t *testing.T) {
-	cfg := config.Default()
-	cfg.DatabaseURL = "postgres://budget:supersecret@db.example/family"
+	cfg := validConfig()
 	cfg.HTTP.Port = 0
 	db := &fakeDatabase{}
 
@@ -208,7 +223,7 @@ func TestRunShutsDownOnContextCancel(t *testing.T) {
 }
 
 func TestDatabaseTargetOmitsCredentials(t *testing.T) {
-	target := databaseTarget("postgres://budget:supersecret@db.example:5432/family?sslmode=disable")
+	target := validConfig().Database.Target()
 	if target != "db.example:5432/family" {
 		t.Fatalf("target = %q", target)
 	}

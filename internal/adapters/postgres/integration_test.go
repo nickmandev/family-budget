@@ -23,7 +23,7 @@ import (
 // MVP_SCOPE quality gate 3 and STACK_DECISIONS §8: migrations, CHECK/unique
 // constraints, household-scoped foreign keys, command idempotency and rollback,
 // the reservation lifecycle, and an upgrade-path check. Every test skips without
-// TEST_POSTGRES_DSN/DATABASE_URL through testStore, so the package compiles and
+// TEST_POSTGRES_* components through testStore, so the package compiles and
 // passes (with skips) on machines without a database.
 
 // TestSchemaEnforcesCriticalConstraints asserts the reviewed migration creates

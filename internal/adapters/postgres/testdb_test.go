@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +15,15 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"family-budget/internal/config"
 	"family-budget/internal/domain"
 	"family-budget/internal/ports"
 )
 
 // testStore returns a Store bound to a fresh, disposable PostgreSQL schema with
-// the reviewed migration applied. It skips the test when no DSN is configured:
-// integration tests must never fail a build or CI job that lacks a database.
+// the reviewed migration applied. It skips the test when the TEST_POSTGRES_*
+// components are not configured: integration tests must never fail a build or
+// CI job that lacks a database.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -35,12 +38,10 @@ func testStore(t *testing.T) *Store {
 func testStoreWithoutMigration(t *testing.T) *Store {
 	t.Helper()
 
-	dsn := os.Getenv("TEST_POSTGRES_DSN")
-	if dsn == "" {
-		dsn = os.Getenv("DATABASE_URL")
-	}
-	if dsn == "" {
-		t.Skip("set TEST_POSTGRES_DSN (or DATABASE_URL) to run PostgreSQL integration tests")
+	database := testDatabaseConfig(t)
+	dsn, err := database.DSN()
+	if err != nil {
+		t.Fatalf("construct test database DSN: %v", err)
 	}
 
 	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
@@ -79,6 +80,47 @@ func testStoreWithoutMigration(t *testing.T) *Store {
 	t.Cleanup(func() { _ = storeSQL.Close() })
 
 	return store
+}
+
+// testDatabaseConfig reads the TEST_POSTGRES_* mirror of the application
+// connection components and builds the DSN with the same helper the server and
+// migrate entrypoint use. It skips when the components are absent.
+func testDatabaseConfig(t *testing.T) config.DatabaseConfig {
+	t.Helper()
+
+	host := strings.TrimSpace(os.Getenv("TEST_POSTGRES_HOST"))
+	user := strings.TrimSpace(os.Getenv("TEST_POSTGRES_USER"))
+	password := os.Getenv("TEST_POSTGRES_PASSWORD")
+	name := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DB"))
+	if host == "" || user == "" || password == "" || name == "" {
+		t.Skip("set TEST_POSTGRES_HOST, TEST_POSTGRES_USER, TEST_POSTGRES_PASSWORD and TEST_POSTGRES_DB to run PostgreSQL integration tests")
+	}
+
+	port := 5432
+	if raw := strings.TrimSpace(os.Getenv("TEST_POSTGRES_PORT")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			t.Fatalf("TEST_POSTGRES_PORT must be an integer: %v", err)
+		}
+		port = parsed
+	}
+	sslmode := strings.TrimSpace(os.Getenv("TEST_POSTGRES_SSLMODE"))
+	if sslmode == "" {
+		sslmode = "disable"
+	}
+
+	database := config.DatabaseConfig{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Name:     name,
+		SSLMode:  sslmode,
+	}
+	if _, err := database.DSN(); err != nil {
+		t.Fatalf("invalid TEST_POSTGRES_* configuration: %v", err)
+	}
+	return database
 }
 
 // newTestSchemaName builds a safe, unique schema name.

@@ -12,7 +12,7 @@ import (
 // This suite exercises the projection-rebuild contract at the database level:
 // every balance the adapter derives from persisted posting/reservation rows
 // must equal the ledger replayed from the journal (POSTING_MATRIX §6, §7 test
-// 12). All tests skip without TEST_POSTGRES_DSN/DATABASE_URL through testStore.
+// 12). All tests skip without the TEST_POSTGRES_* components through testStore.
 
 const projectionSeed int64 = 0x5EED_C0FFEE
 

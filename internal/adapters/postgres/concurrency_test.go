@@ -20,7 +20,7 @@ import (
 // as a command handler would: lock the household, re-read state, validate,
 // append atomically. The full command-over-database wiring lands in 6C/7.
 
-// The concurrency tests skip without TEST_POSTGRES_DSN/DATABASE_URL through
+// The concurrency tests skip without the TEST_POSTGRES_* components through
 // testStore.
 
 func TestConcurrentSpendingCannotDoubleSpend(t *testing.T) {

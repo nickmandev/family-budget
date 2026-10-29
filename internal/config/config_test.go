@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,23 @@ func lookupFrom(values map[string]string) LookupFunc {
 
 func validEnvironment() map[string]string {
 	return map[string]string{
-		EnvDatabaseURL: "postgres://user:pass@localhost:5432/family_budget?sslmode=disable",
+		EnvDatabaseHost:     "localhost",
+		EnvDatabasePort:     "5432",
+		EnvDatabaseUser:     "user",
+		EnvDatabasePassword: "pass",
+		EnvDatabaseName:     "family_budget",
+		EnvDatabaseSSLMode:  "disable",
+	}
+}
+
+func validDatabaseConfig() DatabaseConfig {
+	return DatabaseConfig{
+		Host:     "localhost",
+		Port:     5432,
+		User:     "user",
+		Password: "pass",
+		Name:     "family_budget",
+		SSLMode:  "disable",
 	}
 }
 
@@ -41,8 +58,16 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Auth.RateLimitMax != defaults.Auth.RateLimitMax {
 		t.Errorf("rate limit max = %d, want %d", cfg.Auth.RateLimitMax, defaults.Auth.RateLimitMax)
 	}
-	if cfg.Database != defaults.Database {
-		t.Errorf("database pool = %+v, want %+v", cfg.Database, defaults.Database)
+
+	want := defaults.Database
+	want.Host = "localhost"
+	want.User = "user"
+	want.Password = "pass"
+	want.Name = "family_budget"
+	want.Port = 5432
+	want.SSLMode = "disable"
+	if cfg.Database != want {
+		t.Errorf("database = %+v, want %+v", cfg.Database, want)
 	}
 }
 
@@ -59,6 +84,12 @@ func TestLoadFromOverrides(t *testing.T) {
 	environment[EnvSessionTTL] = "24h"
 	environment[EnvRateLimitMax] = "5"
 	environment[EnvRateLimitWindow] = "2m"
+	environment[EnvDatabaseHost] = "db.example"
+	environment[EnvDatabasePort] = "6543"
+	environment[EnvDatabaseUser] = "budget"
+	environment[EnvDatabasePassword] = "s3cret"
+	environment[EnvDatabaseName] = "budget_db"
+	environment[EnvDatabaseSSLMode] = "require"
 	environment[EnvDatabaseMaxOpenConns] = "7"
 	environment[EnvDatabaseMaxIdleConns] = "3"
 	environment[EnvDatabaseConnMaxLifetime] = "30m"
@@ -89,9 +120,14 @@ func TestLoadFromOverrides(t *testing.T) {
 	if cfg.Auth.RateLimitMax != 5 || cfg.Auth.RateLimitWindow != 2*time.Minute {
 		t.Errorf("rate limit = %d/%v", cfg.Auth.RateLimitMax, cfg.Auth.RateLimitWindow)
 	}
-	wantPool := DatabaseConfig{MaxOpenConns: 7, MaxIdleConns: 3, ConnMaxLifetime: 30 * time.Minute, ConnMaxIdleTime: 5 * time.Minute}
+	wantPool := DatabaseConfig{
+		Host: "db.example", Port: 6543, User: "budget", Password: "s3cret",
+		Name: "budget_db", SSLMode: "require",
+		MaxOpenConns: 7, MaxIdleConns: 3,
+		ConnMaxLifetime: 30 * time.Minute, ConnMaxIdleTime: 5 * time.Minute,
+	}
 	if cfg.Database != wantPool {
-		t.Errorf("database pool = %+v, want %+v", cfg.Database, wantPool)
+		t.Errorf("database = %+v, want %+v", cfg.Database, wantPool)
 	}
 }
 
@@ -100,15 +136,19 @@ func TestLoadFromRejectsInvalidEnvironment(t *testing.T) {
 		name     string
 		variable string
 		value    string
-		remove   bool
+		remove   []string
 	}{
-		{name: "missing database url", remove: true},
-		{name: "database url scheme", variable: EnvDatabaseURL, value: "mysql://user:pass@localhost/db"},
-		{name: "database url host", variable: EnvDatabaseURL, value: "postgres:///db"},
-		{name: "database url database", variable: EnvDatabaseURL, value: "postgres://localhost"},
-		{name: "port zero", variable: EnvPort, value: "0"},
-		{name: "port too high", variable: EnvPort, value: "70000"},
-		{name: "port not a number", variable: EnvPort, value: "http"},
+		{name: "missing host", remove: []string{EnvDatabaseHost}},
+		{name: "missing user", remove: []string{EnvDatabaseUser}},
+		{name: "missing password", remove: []string{EnvDatabasePassword}},
+		{name: "missing database", remove: []string{EnvDatabaseName}},
+		{name: "port zero", variable: EnvDatabasePort, value: "0"},
+		{name: "port too high", variable: EnvDatabasePort, value: "70000"},
+		{name: "port not a number", variable: EnvDatabasePort, value: "http"},
+		{name: "sslmode invalid", variable: EnvDatabaseSSLMode, value: "sometimes"},
+		{name: "port zero for api", variable: EnvPort, value: "0"},
+		{name: "port too high for api", variable: EnvPort, value: "70000"},
+		{name: "port not a number for api", variable: EnvPort, value: "http"},
 		{name: "body too small", variable: EnvHTTPMaxBodyBytes, value: "10"},
 		{name: "body not a number", variable: EnvHTTPMaxBodyBytes, value: "big"},
 		{name: "request timeout not a duration", variable: EnvHTTPRequestTimeout, value: "soon"},
@@ -135,9 +175,10 @@ func TestLoadFromRejectsInvalidEnvironment(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environment := validEnvironment()
-			if test.remove {
-				delete(environment, EnvDatabaseURL)
-			} else {
+			for _, name := range test.remove {
+				delete(environment, name)
+			}
+			if test.variable != "" {
 				environment[test.variable] = test.value
 			}
 			_, err := LoadFrom(lookupFrom(environment))
@@ -171,14 +212,15 @@ func TestLoadFromHTTPTimeouts(t *testing.T) {
 
 func TestLoadFromDoesNotEchoSecrets(t *testing.T) {
 	environment := validEnvironment()
-	environment[EnvDatabaseURL] = "mysql://user:super-secret@localhost/db"
+	environment[EnvDatabasePassword] = "super-secret"
+	environment[EnvDatabaseSSLMode] = "not-a-mode"
 
 	_, err := LoadFrom(lookupFrom(environment))
 	if err == nil {
-		t.Fatal("LoadFrom accepted a non-postgres DSN")
+		t.Fatal("LoadFrom accepted an invalid sslmode")
 	}
 	if strings.Contains(err.Error(), "super-secret") {
-		t.Fatalf("validation error leaked the DSN secret: %v", err)
+		t.Fatalf("validation error leaked the password: %v", err)
 	}
 }
 
@@ -195,5 +237,109 @@ func TestLoadFromReportsMultipleProblems(t *testing.T) {
 		if !strings.Contains(err.Error(), variable) {
 			t.Errorf("error %q does not mention %s", err, variable)
 		}
+	}
+}
+
+func TestDatabaseDSNEncodesReservedCharacters(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  DatabaseConfig
+		want string
+	}{
+		{
+			name: "simple",
+			cfg: DatabaseConfig{
+				Host: "localhost", Port: 5432, User: "user", Password: "pass",
+				Name: "family_budget", SSLMode: "disable",
+			},
+			want: "postgres://user:pass@localhost:5432/family_budget?sslmode=disable",
+		},
+		{
+			name: "reserved characters in user and password",
+			cfg: DatabaseConfig{
+				Host: "db.example", Port: 5432, User: "us@er:name",
+				Password: "p@ss:w/rd?%&# ", Name: "family_budget", SSLMode: "require",
+			},
+			want: "postgres://us%40er%3Aname:p%40ss%3Aw%2Frd%3F%25&%23%20@db.example:5432/family_budget?sslmode=require",
+		},
+		{
+			name: "ipv6 host",
+			cfg: DatabaseConfig{
+				Host: "::1", Port: 5432, User: "user",
+				Password: "pa ss#?&%/@:", Name: "db", SSLMode: "require",
+			},
+			want: "postgres://user:pa%20ss%23%3F&%25%2F%40%3A@[::1]:5432/db?sslmode=require",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.cfg.DSN()
+			if err != nil {
+				t.Fatalf("DSN: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("DSN = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDatabaseDSNValidatesRequiredComponents(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DatabaseConfig)
+		want   string
+	}{
+		{"missing host", func(c *DatabaseConfig) { c.Host = "" }, EnvDatabaseHost},
+		{"missing port", func(c *DatabaseConfig) { c.Port = 0 }, EnvDatabasePort},
+		{"missing user", func(c *DatabaseConfig) { c.User = "" }, EnvDatabaseUser},
+		{"missing password", func(c *DatabaseConfig) { c.Password = "" }, EnvDatabasePassword},
+		{"missing database", func(c *DatabaseConfig) { c.Name = "" }, EnvDatabaseName},
+		{"invalid sslmode", func(c *DatabaseConfig) { c.SSLMode = "sometimes" }, EnvDatabaseSSLMode},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validDatabaseConfig()
+			test.mutate(&cfg)
+			_, err := cfg.DSN()
+			if err == nil {
+				t.Fatal("DSN accepted an incomplete configuration")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error %q does not name %s", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDatabaseTargetAndRedaction(t *testing.T) {
+	cfg := validDatabaseConfig()
+	cfg.Host = "db.example"
+	cfg.User = "budget"
+	cfg.Password = "super-secret"
+	cfg.Name = "family"
+
+	if got := cfg.Target(); got != "db.example:5432/family" {
+		t.Fatalf("Target = %q, want db.example:5432/family", got)
+	}
+	if strings.Contains(cfg.Target(), cfg.Password) || strings.Contains(cfg.Target(), cfg.User) {
+		t.Fatalf("Target leaked credentials: %q", cfg.Target())
+	}
+
+	dsn, err := cfg.DSN()
+	if err != nil {
+		t.Fatalf("DSN: %v", err)
+	}
+	driverErr := errors.New("dial failed: " + dsn + " password=super-secret")
+	redacted := cfg.RedactError(driverErr, dsn)
+	for _, secret := range []string{"super-secret", "budget:", dsn} {
+		if strings.Contains(redacted, secret) {
+			t.Errorf("redacted error leaked %q: %v", secret, redacted)
+		}
+	}
+	if !strings.Contains(redacted, "db.example:5432/family") {
+		t.Errorf("redacted error %q does not name the database target", redacted)
 	}
 }

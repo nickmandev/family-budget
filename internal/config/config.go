@@ -3,14 +3,15 @@
 // server starts so a misconfigured deployment fails fast instead of running
 // with unsafe defaults.
 //
-// Secrets are never formatted into errors or logs. In particular, a malformed
-// DATABASE_URL is reported by variable name, not by value, because the value
-// may contain a password.
+// Secrets are never formatted into errors or logs. In particular, a missing or
+// invalid database component is reported by variable name, not by value,
+// because one of the values is a password.
 package config
 
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -21,7 +22,14 @@ import (
 // Environment variable names. They are exported so deployment tooling and
 // documentation can refer to one canonical list.
 const (
-	EnvDatabaseURL = "DATABASE_URL"
+	// Database connection components. They are separate so a human never has
+	// to hand-build a connection URL; DatabaseConfig.DSN constructs it.
+	EnvDatabaseHost     = "POSTGRES_HOST"
+	EnvDatabasePort     = "POSTGRES_PORT"
+	EnvDatabaseUser     = "POSTGRES_USER"
+	EnvDatabasePassword = "POSTGRES_PASSWORD"
+	EnvDatabaseName     = "POSTGRES_DB"
+	EnvDatabaseSSLMode  = "POSTGRES_SSLMODE"
 
 	// Connection-pool bounds for the api process. They are deliberately below
 	// PostgreSQL's max_connections (deploy/postgres/99-small-vps.conf) so the
@@ -54,18 +62,24 @@ const (
 
 // Config is the validated process configuration.
 type Config struct {
-	// DatabaseURL is the PostgreSQL DSN. It is required for the server binary
-	// and must be a postgres:// or postgresql:// URL.
-	DatabaseURL string
-	Database    DatabaseConfig
-	HTTP        HTTPConfig
-	Auth        AuthConfig
+	Database DatabaseConfig
+	HTTP     HTTPConfig
+	Auth     AuthConfig
 }
 
-// DatabaseConfig holds the database/sql connection-pool bounds. They keep the
-// api process from opening more connections than PostgreSQL is tuned to serve
-// on a small shared VPS.
+// DatabaseConfig holds the database connection components and the
+// database/sql connection-pool bounds. The components are supplied separately
+// by the operator; DSN is the only place that turns them into a URL. The pool
+// bounds keep the api process from opening more connections than PostgreSQL is
+// tuned to serve on a small shared VPS.
 type DatabaseConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Name     string
+	SSLMode  string
+
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
@@ -103,8 +117,10 @@ type Argon2Config struct {
 	SaltLength uint32 // random salt length in bytes
 }
 
-// Default returns the built-in defaults. DATABASE_URL has no safe default and
-// is therefore empty until LoadFrom validates it.
+// Default returns the built-in defaults. The database host, user, password and
+// name have no safe default and are therefore empty until LoadFrom validates
+// them; the port and sslmode defaults are suitable for the private compose
+// network.
 //
 // Argon2id defaults (time=3, memory=64 MiB, threads=4, key=32 B, salt=16 B)
 // target interactive login latency on a small VPS. They are deliberately
@@ -116,6 +132,8 @@ func Default() Config {
 		// shipped PostgreSQL tuning file, leaving room for migrations, the
 		// healthcheck and an operator psql session.
 		Database: DatabaseConfig{
+			Port:            5432,
+			SSLMode:         "disable",
 			MaxOpenConns:    10,
 			MaxIdleConns:    5,
 			ConnMaxLifetime: time.Hour,
@@ -168,14 +186,21 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 		problems = append(problems, fmt.Errorf(format, args...))
 	}
 
-	// DatabaseURL is mandatory and never echoed on failure.
-	dsn, ok := nonEmpty(lookup, EnvDatabaseURL)
-	if !ok {
-		add("%s is required", EnvDatabaseURL)
-	} else if err := validateDatabaseURL(dsn); err != nil {
-		add("%s is invalid: %v", EnvDatabaseURL, err)
-	} else {
-		cfg.DatabaseURL = dsn
+	// Database connection components are mandatory and never echoed on
+	// failure. A password is assigned verbatim: trimming it would silently
+	// change a legitimate secret.
+	cfg.Database.Host, _ = nonEmpty(lookup, EnvDatabaseHost)
+	cfg.Database.User, _ = nonEmpty(lookup, EnvDatabaseUser)
+	if raw, ok := lookup(EnvDatabasePassword); ok {
+		cfg.Database.Password = raw
+	}
+	cfg.Database.Name, _ = nonEmpty(lookup, EnvDatabaseName)
+	if raw, ok := nonEmpty(lookup, EnvDatabaseSSLMode); ok {
+		cfg.Database.SSLMode = strings.ToLower(raw)
+	}
+	cfg.Database.Port = lookupInt(lookup, EnvDatabasePort, cfg.Database.Port, add)
+	if err := cfg.Database.Validate(); err != nil {
+		problems = append(problems, err)
 	}
 
 	cfg.Database.MaxOpenConns = lookupInt(lookup, EnvDatabaseMaxOpenConns, cfg.Database.MaxOpenConns, add)
@@ -320,23 +345,84 @@ func lookupDuration(lookup LookupFunc, key string, fallback time.Duration, add f
 	return value
 }
 
-// validateDatabaseURL checks the DSN shape without ever including the value in
-// the returned error.
-func validateDatabaseURL(dsn string) error {
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		return errors.New("not a valid URL")
+// Validate reports missing or malformed connection components. Every error
+// names the environment variable to fix and never includes its value.
+func (c DatabaseConfig) Validate() error {
+	var problems []error
+	add := func(format string, args ...any) {
+		problems = append(problems, fmt.Errorf(format, args...))
 	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "postgres", "postgresql":
+	if strings.TrimSpace(c.Host) == "" {
+		add("%s is required", EnvDatabaseHost)
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		add("%s must be between 1 and 65535", EnvDatabasePort)
+	}
+	if strings.TrimSpace(c.User) == "" {
+		add("%s is required", EnvDatabaseUser)
+	}
+	if strings.TrimSpace(c.Password) == "" {
+		add("%s is required", EnvDatabasePassword)
+	}
+	if strings.TrimSpace(c.Name) == "" {
+		add("%s is required", EnvDatabaseName)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.SSLMode)) {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
 	default:
-		return errors.New("scheme must be postgres or postgresql")
+		add("%s must be one of disable, allow, prefer, require, verify-ca or verify-full", EnvDatabaseSSLMode)
 	}
-	if parsed.Host == "" {
-		return errors.New("host is required")
+	return errors.Join(problems...)
+}
+
+// DSN is the single place that turns the connection components into a
+// PostgreSQL URL. net/url percent-encodes the user and password, so reserved
+// characters such as @ : / ? # % & and space are safe. Callers must not accept
+// a user-supplied URL.
+func (c DatabaseConfig) DSN() (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", err
 	}
-	if strings.TrimPrefix(parsed.Path, "/") == "" {
-		return errors.New("database name is required")
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.User, c.Password),
+		Host:   net.JoinHostPort(strings.TrimSpace(c.Host), strconv.Itoa(c.Port)),
+		Path:   "/" + strings.TrimSpace(c.Name),
 	}
-	return nil
+	query := url.Values{}
+	query.Set("sslmode", strings.ToLower(strings.TrimSpace(c.SSLMode)))
+	u.RawQuery = query.Encode()
+	return u.String(), nil
+}
+
+// Target returns a log-safe host:port/database description without credentials.
+func (c DatabaseConfig) Target() string {
+	host := strings.TrimSpace(c.Host)
+	if host == "" {
+		return "postgres"
+	}
+	target := net.JoinHostPort(host, strconv.Itoa(c.Port))
+	if name := strings.TrimSpace(c.Name); name != "" {
+		target += "/" + name
+	}
+	return target
+}
+
+// RedactError removes the constructed DSN, its userinfo and the password from
+// an error message so driver errors can be reported without leaking a secret.
+func (c DatabaseConfig) RedactError(err error, dsn string) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if dsn != "" {
+		message = strings.ReplaceAll(message, dsn, c.Target())
+		if parsed, parseErr := url.Parse(dsn); parseErr == nil && parsed.User != nil {
+			message = strings.ReplaceAll(message, parsed.User.String(), "[redacted]")
+		}
+	}
+	if c.Password != "" {
+		message = strings.ReplaceAll(message, c.Password, "[redacted]")
+	}
+	return message
 }

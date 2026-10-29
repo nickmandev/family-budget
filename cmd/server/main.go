@@ -12,10 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"family-budget/internal/adapters/postgres"
@@ -51,7 +49,11 @@ func main() {
 	err := run(ctx, runDeps{
 		loadConfig: config.Load,
 		openDatabase: func(cfg config.Config) (database, error) {
-			return postgres.Open(cfg.DatabaseURL, postgres.PoolConfig{
+			dsn, err := cfg.Database.DSN()
+			if err != nil {
+				return nil, err
+			}
+			return postgres.Open(dsn, postgres.PoolConfig{
 				MaxOpenConns:    cfg.Database.MaxOpenConns,
 				MaxIdleConns:    cfg.Database.MaxIdleConns,
 				ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
@@ -84,20 +86,24 @@ func run(ctx context.Context, deps runDeps) error {
 	if err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
+	dsn, err := cfg.Database.DSN()
+	if err != nil {
+		return fmt.Errorf("invalid database configuration: %w", err)
+	}
 	logger := slog.New(slog.NewJSONHandler(deps.stderr, nil))
 
 	db, err := deps.openDatabase(cfg)
 	if err != nil {
-		return fmt.Errorf("connect to database %s: %s", databaseTarget(cfg.DatabaseURL), sanitizeError(err, cfg.DatabaseURL))
+		return fmt.Errorf("connect to database %s: %s", cfg.Database.Target(), cfg.Database.RedactError(err, dsn))
 	}
 	defer func() {
 		if closeErr := db.Close(); closeErr != nil {
-			logger.Error("close database", "error", sanitizeError(closeErr, cfg.DatabaseURL))
+			logger.Error("close database", "error", cfg.Database.RedactError(closeErr, dsn))
 		}
 	}()
 
 	if err := db.Ping(ctx); err != nil {
-		return fmt.Errorf("database %s is not reachable: %s", databaseTarget(cfg.DatabaseURL), sanitizeError(err, cfg.DatabaseURL))
+		return fmt.Errorf("database %s is not reachable: %s", cfg.Database.Target(), cfg.Database.RedactError(err, dsn))
 	}
 
 	server, err := buildServer(cfg, db, logger)
@@ -107,7 +113,7 @@ func run(ctx context.Context, deps runDeps) error {
 
 	logger.Info("starting api server",
 		"addr", server.Addr(),
-		"database", databaseTarget(cfg.DatabaseURL),
+		"database", cfg.Database.Target(),
 		"migrations", "applied out-of-band with goose",
 	)
 	if err := server.Run(ctx); err != nil {
@@ -165,42 +171,4 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 		return nil, fmt.Errorf("configure http server: %w", err)
 	}
 	return server, nil
-}
-
-// databaseTarget returns a log-safe description of the DSN: host plus database
-// name, never userinfo, password or query parameters.
-func databaseTarget(dsn string) string {
-	parsed, err := url.Parse(dsn)
-	if err != nil || parsed.Host == "" {
-		return "postgres"
-	}
-	name := strings.TrimPrefix(parsed.Path, "/")
-	if name == "" {
-		return parsed.Host
-	}
-	return parsed.Host + "/" + name
-}
-
-// sanitizeError removes the DSN and its credentials from an error string so a
-// driver error can be reported without leaking a password.
-func sanitizeError(err error, dsn string) string {
-	if err == nil {
-		return ""
-	}
-	message := err.Error()
-	if dsn != "" {
-		message = strings.ReplaceAll(message, dsn, databaseTarget(dsn))
-	}
-	parsed, parseErr := url.Parse(dsn)
-	if parseErr != nil || parsed.User == nil {
-		return message
-	}
-	if password, ok := parsed.User.Password(); ok && password != "" {
-		message = strings.ReplaceAll(message, password, "[redacted]")
-	}
-	message = strings.ReplaceAll(message, parsed.User.String(), "[redacted]")
-	if username := parsed.User.Username(); username != "" {
-		message = strings.ReplaceAll(message, username, "[redacted]")
-	}
-	return message
 }
