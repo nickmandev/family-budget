@@ -12,9 +12,6 @@
 .env.*
 !.env.example
 
-# Local staging area for encrypted backup artifacts (never committed)
-/backups/
-
 # Editor and OS noise
 .idea/
 .vscode/
