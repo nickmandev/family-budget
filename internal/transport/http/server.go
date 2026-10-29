@@ -83,7 +83,7 @@ func NewServer(deps Dependencies) (*Server, error) {
 	server.handler = Chain(
 		mux,
 		RequestID(),
-		Logging(deps.Logger),
+		Logging(deps.Logger, newClientIPResolver(deps.Config.HTTP.TrustedProxies)),
 		Recovery(deps.Logger),
 		MaxBodyBytes(deps.Config.HTTP.MaxBodyBytes),
 		Timeout(deps.Config.HTTP.RequestTimeout),

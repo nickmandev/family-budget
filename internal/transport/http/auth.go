@@ -69,7 +69,10 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 		limiter = NewRateLimiter(s.deps.Config.Auth.RateLimitMax, s.deps.Config.Auth.RateLimitWindow)
 	}
 	rateLimited := func(next http.Handler) http.Handler {
-		return RateLimit(limiter, authRateLimitKey)(next)
+		// Behind the host nginx (and Cloudflare) the transport peer is
+		// loopback; key the limiter by the forwarded client IP from the
+		// configured trusted proxies so each user has their own bucket.
+		return RateLimit(limiter, authRateLimitKey(newClientIPResolver(s.deps.Config.HTTP.TrustedProxies)))(next)
 	}
 
 	s.register(mux, "POST /api/v1/auth/register", rateLimited(http.HandlerFunc(s.handleRegister)))

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -116,21 +115,17 @@ func clientIPKey(r *http.Request) string {
 	return clientIP(r)
 }
 
-// clientIP uses the transport peer address. X-Forwarded-For is deliberately not
-// trusted: with a reverse proxy, rate limiting should either be configured at
-// the proxy or this function extended behind an explicit trusted-proxy setting.
+// clientIP uses the trusted-proxy resolver: loopback peers may supply the real
+// client through X-Forwarded-For/X-Real-IP, everyone else is keyed by the
+// transport address.
 func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && host != "" {
-		return host
-	}
-	if r.RemoteAddr == "" {
-		return "unknown"
-	}
-	return r.RemoteAddr
+	return defaultClientIPResolver.resolve(r)
 }
 
-// authRateLimitKey isolates each auth path's bucket per client.
-func authRateLimitKey(r *http.Request) string {
-	return r.URL.Path + "|" + clientIP(r)
+// authRateLimitKey isolates each auth path's bucket per client, using the
+// server's configured trusted proxies.
+func authRateLimitKey(resolver clientIPResolver) func(*http.Request) string {
+	return func(r *http.Request) string {
+		return r.URL.Path + "|" + resolver.resolve(r)
+	}
 }

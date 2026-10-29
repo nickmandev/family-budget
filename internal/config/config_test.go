@@ -343,3 +343,28 @@ func TestDatabaseTargetAndRedaction(t *testing.T) {
 		t.Errorf("redacted error %q does not name the database target", redacted)
 	}
 }
+
+func TestLoadFromTrustedProxies(t *testing.T) {
+	cfg, err := LoadFrom(lookupFrom(validEnvironment()))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := strings.Join(cfg.HTTP.TrustedProxies, ","); got != "127.0.0.0/8,::1/128" {
+		t.Errorf("default trusted proxies = %q, want loopback only", got)
+	}
+
+	environment := validEnvironment()
+	environment[EnvHTTPTrustedProxies] = "10.0.0.0/8, 2001:db8::/32"
+	cfg, err = LoadFrom(lookupFrom(environment))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := strings.Join(cfg.HTTP.TrustedProxies, ","); got != "10.0.0.0/8,2001:db8::/32" {
+		t.Errorf("trusted proxies = %q, want the configured CIDRs", got)
+	}
+
+	environment[EnvHTTPTrustedProxies] = "not-a-cidr"
+	if _, err := LoadFrom(lookupFrom(environment)); err == nil || !strings.Contains(err.Error(), EnvHTTPTrustedProxies) {
+		t.Errorf("invalid CIDR error = %v, want it to name %s", err, EnvHTTPTrustedProxies)
+	}
+}

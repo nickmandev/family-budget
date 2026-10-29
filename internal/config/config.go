@@ -49,6 +49,11 @@ const (
 	EnvHTTPShutdownTimeout   = "HTTP_SHUTDOWN_TIMEOUT"
 	EnvHTTPMaxBodyBytes      = "HTTP_MAX_BODY_BYTES"
 
+	// EnvHTTPTrustedProxies lists the peer CIDRs whose forwarding headers
+	// (X-Forwarded-For, X-Real-IP) may be trusted. The default is loopback
+	// only, because the host nginx is the sole proxy in front of the API.
+	EnvHTTPTrustedProxies = "HTTP_TRUSTED_PROXIES"
+
 	EnvArgon2Time       = "AUTH_ARGON2_TIME"
 	EnvArgon2MemoryKiB  = "AUTH_ARGON2_MEMORY_KIB"
 	EnvArgon2Threads    = "AUTH_ARGON2_THREADS"
@@ -96,6 +101,11 @@ type HTTPConfig struct {
 	RequestTimeout    time.Duration
 	ShutdownTimeout   time.Duration
 	MaxBodyBytes      int64
+
+	// TrustedProxies are the peer networks allowed to supply the real client
+	// IP through X-Forwarded-For or X-Real-IP. Requests from any other peer
+	// use their transport address, so a direct caller cannot spoof the header.
+	TrustedProxies []string
 }
 
 // AuthConfig holds password-hashing, session and auth rate-limit settings.
@@ -148,6 +158,9 @@ func Default() Config {
 			RequestTimeout:    10 * time.Second,
 			ShutdownTimeout:   10 * time.Second,
 			MaxBodyBytes:      1 << 20, // 1 MiB
+			// The host nginx proxies over loopback; nothing else is trusted
+			// by default.
+			TrustedProxies: []string{"127.0.0.0/8", "::1/128"},
 		},
 		Auth: AuthConfig{
 			Argon2: Argon2Config{
@@ -254,6 +267,13 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 		add("%s must be between 1024 and %d", EnvHTTPMaxBodyBytes, 16<<20)
 	}
 
+	cfg.HTTP.TrustedProxies = lookupCSV(lookup, EnvHTTPTrustedProxies, cfg.HTTP.TrustedProxies)
+	for _, cidr := range cfg.HTTP.TrustedProxies {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			add("%s contains invalid CIDR %q", EnvHTTPTrustedProxies, cidr)
+		}
+	}
+
 	cfg.Auth.Argon2.Time = uint32(lookupInt(lookup, EnvArgon2Time, int(cfg.Auth.Argon2.Time), add))
 	cfg.Auth.Argon2.MemoryKiB = uint32(lookupInt64(lookup, EnvArgon2MemoryKiB, int64(cfg.Auth.Argon2.MemoryKiB), add))
 	cfg.Auth.Argon2.Threads = uint8(lookupInt(lookup, EnvArgon2Threads, int(cfg.Auth.Argon2.Threads), add))
@@ -343,6 +363,22 @@ func lookupDuration(lookup LookupFunc, key string, fallback time.Duration, add f
 		return fallback
 	}
 	return value
+}
+
+// lookupCSV parses a comma-separated list, trimming each entry. An unset or
+// empty value keeps the fallback; an explicitly empty list trusts no proxies.
+func lookupCSV(lookup LookupFunc, key string, fallback []string) []string {
+	raw, ok := nonEmpty(lookup, key)
+	if !ok {
+		return fallback
+	}
+	values := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 // Validate reports missing or malformed connection components. Every error

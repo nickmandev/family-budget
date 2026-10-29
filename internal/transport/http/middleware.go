@@ -125,9 +125,13 @@ func (r *statusRecorder) HeaderWritten() bool { return r.wroteHeader }
 // tokens, reset tokens and financial payloads cannot appear here. The path is
 // logged without its query because auth/recovery links could carry a token in
 // the query string.
-func Logging(logger *slog.Logger) Middleware {
+func Logging(logger *slog.Logger, trustedProxies ...clientIPResolver) Middleware {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	resolver := defaultClientIPResolver
+	if len(trustedProxies) > 0 {
+		resolver = trustedProxies[0]
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +149,7 @@ func Logging(logger *slog.Logger) Middleware {
 				"bytes", recorder.bytes,
 				"duration_ms", float64(time.Since(start).Microseconds())/1000,
 				"remote_addr", r.RemoteAddr,
+				"client_ip", resolver.resolve(r),
 			)
 		})
 	}
