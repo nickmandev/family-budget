@@ -145,9 +145,10 @@ needed.
 
 ### Lost password or credential exposure
 
-Rotate `POSTGRES_PASSWORD`/`DATABASE_URL` and recreate `db`/`api`/`migrate`.
-Restore from a known-good host-level backup onto a **clean** host rather than
-trusting the compromised one.
+Rotate `POSTGRES_PASSWORD` (the `POSTGRES_*` components) and recreate
+`db`/`api`/`migrate`; the connection URL is rebuilt internally. Restore from a
+known-good host-level backup onto a **clean** host rather than trusting the
+compromised one.
 
 ## 3. Quality gate evidence
 
@@ -165,10 +166,10 @@ Recorded live run:
   `scripts/integration-test.sh --all --race`.
 - PostgreSQL adapter suite: 47 test cases (19 top-level + 28 subtests), 47
   passed, 0 failed, 0 skipped.
-- Full `go test -count=1 ./...` with `TEST_POSTGRES_DSN` set: 1193 test cases
-  (359 top-level), all passed, 0 failed, 0 skipped.
-- `go test -count=1 -race ./...` with `TEST_POSTGRES_DSN` set: all packages
-  green.
+- Full `go test -count=1 ./...` with the `TEST_POSTGRES_*` components set: 1193
+  test cases (359 top-level), all passed, 0 failed, 0 skipped.
+- `go test -count=1 -race ./...` with the `TEST_POSTGRES_*` components set: all
+  packages green.
 
 The first live run also found four test-harness assumptions that had never been
 executed (migration SQL splitting, the `ON DELETE RESTRICT` SQLSTATE, the

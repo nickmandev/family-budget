@@ -58,6 +58,30 @@ major upgrades require a dump/restore, not just a tag bump.
   only if HTTP/3 is desired).
 - Repository checkout on the host. No container binds a public port.
 
+## Database connection configuration
+
+The database connection is configured with separate components, never a
+connection URL. `.env.example` defines each value once and compose passes the
+same variable names to the services that consume them.
+
+| Variable | Example | Consumed by |
+|----------|---------|-------------|
+| `POSTGRES_HOST` | `db` (the compose service name) | `api`, `migrate` |
+| `POSTGRES_PORT` | `5432` | `api`, `migrate` |
+| `POSTGRES_USER` | `family_budget` | `db`, `api`, `migrate` |
+| `POSTGRES_PASSWORD` | long random value | `db`, `api`, `migrate` |
+| `POSTGRES_DB` | `family_budget` | `db`, `api`, `migrate` |
+| `POSTGRES_SSLMODE` | `disable` on the private network | `api`, `migrate` |
+
+`internal/config` constructs the `postgres://` URL internally with proper
+percent-encoding and the selected `sslmode`; `cmd/migrate` calls the same helper,
+so server, migrations and tests can never disagree. **Never construct or paste a
+connection URL yourself** — there is no URL environment variable.
+
+The connection-pool variables (`DATABASE_MAX_OPEN_CONNS`,
+`DATABASE_MAX_IDLE_CONNS`, `DATABASE_CONN_MAX_LIFETIME`,
+`DATABASE_CONN_MAX_IDLE_TIME`) are separate and documented in `.env.example`.
+
 ## First run
 
 1. Create the secret environment file and restrict it:
@@ -69,9 +93,12 @@ major upgrades require a dump/restore, not just a tag bump.
 
 2. Edit `.env`:
    - Set `POSTGRES_PASSWORD` to a long random value, e.g.
-     `openssl rand -base64 32`.
-   - Set the same password inside `DATABASE_URL`, percent-encoding URL-special
-     characters (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `#` → `%23`).
+     `openssl rand -base64 32`. The same value is read by `db`, `api` and
+     `migrate`; do not copy it into a URL and do not percent-encode it.
+   - Leave `POSTGRES_HOST=db`, `POSTGRES_PORT=5432`, `POSTGRES_USER`,
+     `POSTGRES_DB` and `POSTGRES_SSLMODE=disable` as shipped unless the
+     database lives outside the compose stack (then set `POSTGRES_HOST` and the
+     other components accordingly).
    - Optionally set `API_HOST_PORT` (default `8080`); keep it in sync with the
      `proxy_pass` line in the nginx snippet.
    - The public hostname is not app configuration: it lives in the nginx
@@ -159,10 +186,12 @@ major upgrades require a dump/restore, not just a tag bump.
 - Migrations: `docker compose run --rm migrate status` to inspect;
   `docker compose run --rm migrate up` to apply. Treat `down` as destructive
   and review the migration first.
-- Secret rotation: change `POSTGRES_PASSWORD` and `DATABASE_URL`, then recreate
-  the affected services (`docker compose up -d --force-recreate db api`).
-  Rotating the PostgreSQL role password inside a running database is a planned
-  operational step; do not assume editing `.env` changes it.
+- Secret rotation: change `POSTGRES_PASSWORD` (and any other `POSTGRES_*`
+  component if the database moved), then recreate the affected services
+  (`docker compose up -d --force-recreate db api migrate`). The connection URL
+  is rebuilt internally from the components. Rotating the PostgreSQL role
+  password inside a running database is a planned operational step; do not
+  assume editing `.env` changes it.
 - Resource limits (`deploy.resources.limits`): db 0.75 CPU / 768 MiB, api
   0.75 CPU / 256 MiB, migrate 0.25 CPU / 256 MiB. These are ceilings, not
   reservations; see [Resource footprint / sizing](#resource-footprint--sizing).
@@ -259,8 +288,9 @@ raising limits on a box that has no memory to spare.
   10001. `migrate` needs no writable filesystem.
 - Secrets live only in the git-ignored `.env` (mode 600) and never in the
   Compose file, image layers or build context (`.dockerignore` excludes
-  `.env*`). Only `db` receives `POSTGRES_PASSWORD`; only `api`/`migrate`
-  receive `DATABASE_URL`; no proxy container receives database credentials.
+  `.env*`). `db`, `api` and `migrate` receive the database components they need;
+  the `api` and `migrate` binaries construct the connection URL internally. No
+  proxy container receives database credentials.
 - nginx terminates TLS with the operator's existing Let's Encrypt certificate
   and sets HSTS, `X-Content-Type-Options`, `X-Frame-Options`,
   `Referrer-Policy` and `Cross-Origin-Opener-Policy` (same header set as the

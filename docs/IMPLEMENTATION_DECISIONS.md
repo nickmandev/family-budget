@@ -107,6 +107,26 @@ not want a parallel backup path maintained in this codebase.
 **Test impact.** The `deploy/backup` static guards are removed; migration and
 integration runners are unaffected.
 
+## Database connection configuration (resolved by owner, 2026-10-27)
+
+**Rule.** Users supply separate database connection components (`POSTGRES_HOST`,
+`POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
+`POSTGRES_SSLMODE`). The connection string is constructed only by internal
+logic: `config.DatabaseConfig.DSN` is the single Go helper, used by both
+`cmd/server` and `cmd/migrate`. URL-style environment variables are not accepted
+anywhere — compose, scripts, CI, documentation or tests.
+
+**Rationale.** Hand-built DSNs are error-prone: reserved characters need
+percent-encoding, the password gets copied into a second place, and a missing or
+wrong `sslmode` is easy to overlook. One helper keeps the server, migrations and
+tests identical.
+
+**Test impact.** Unit tests cover the helper with reserved characters in user and
+password, IPv6 hosts, `sslmode` inclusion and missing-component validation.
+Because the migrate entrypoint reuses the same Go helper, no shell parity test is
+needed; a `cmd/migrate` test asserts the reuse. Static deploy guards assert the
+URL-style variables are gone and that compose wires the component family.
+
 ## Still open (not resolved by this document)
 
 No decision has been made yet on the following. They should not block domain work, but each needs a documented proposal with trade-offs before it is finalized:
