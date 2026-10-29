@@ -6,7 +6,10 @@ Production deployment of the family-budget API. The decisions come from
 ## Stack overview
 
 ```
-internet ──> nginx :80/:443 (host, Let's Encrypt)
+internet ──> Cloudflare (proxied DNS, edge TLS, bot protection)
+                  │  Full (strict)
+                  ▼
+          nginx :80/:443 (host, Let's Encrypt)
                   │
                   └─ 127.0.0.1:8080 ──> api :8080 ──> db :5432 (PostgreSQL)
                                              │              │
@@ -24,7 +27,8 @@ internet ──> nginx :80/:443 (host, Let's Encrypt)
 - `frontend` is a non-internal network used only by `api` so the loopback port
   publish is reliable; it carries no other service.
 - The host's existing nginx is the sole public listener (80/443) and proxies to
-  the API's loopback binding. No proxy runs inside the Compose stack.
+  the API's loopback binding. Cloudflare is the only public entry point in front
+  of it; no proxy runs inside the Compose stack.
 - Named volumes: `pgdata` (PostgreSQL data, mounted at
   `/var/lib/postgresql` — PostgreSQL 18's data root). There is no proxy state
   volume; TLS material stays in the host's `/etc/letsencrypt`.
@@ -50,13 +54,52 @@ major upgrades require a dump/restore, not just a tag bump.
 
 ## Prerequisites
 
-- Docker Engine with Compose v2 (`docker compose version`).
-- A DNS `A`/`AAAA` record for the chosen subdomain pointing at the VPS.
+- Docker Engine with Compose v2 (`docker compose version`) on the VPS. The dev
+  PC that builds images also needs Docker with Compose v2.
+- A Cloudflare-managed DNS zone for the domain, with a **proxied** `A`/`AAAA`
+  record for `budget-api.<domain>` pointing at the VPS (see
+  [Cloudflare](#cloudflare)).
 - nginx and certbot already installed and serving the operator's other projects
   on this host, with Let's Encrypt certificates and renewal as usual.
-- Host firewall allowing SSH plus nginx's inbound TCP 80 and 443 (and UDP 443
-  only if HTTP/3 is desired).
-- Repository checkout on the host. No container binds a public port.
+- Host firewall allowing SSH, plus inbound TCP 80 and 443 **only from the
+  Cloudflare ranges** (and UDP 443 only if HTTP/3 is desired).
+- Repository synced to the host with `rsync`. Images are built on the dev PC and
+  shipped, not built on the VPS. No container binds a public port.
+
+## Cloudflare
+
+The public hostname is `budget-api.<domain>`; Cloudflare sits in front of the
+VPS:
+
+```
+client ──TLS──> Cloudflare ──Full (strict)──> nginx :443 ──> 127.0.0.1:8080
+```
+
+- **DNS:** an `A` (and optionally `AAAA`) record for `budget-api.<domain>`
+  pointing at the VPS with proxy status **proxied** (orange cloud). A grey-cloud
+  record bypasses Cloudflare, so the real-client-IP restoration never runs.
+- **SSL/TLS mode:** **Full (strict)**, never **Flexible**. The origin already
+  serves a valid Let's Encrypt certificate; Flexible would send plaintext to the
+  origin and silently break origin TLS.
+- **Always Use HTTPS:** enabled, so Cloudflare upgrades HTTP before it reaches
+  the origin.
+- **Bot protection** is Cloudflare's job at the edge. The application still
+  enforces authentication and per-IP rate limits itself; Cloudflare is not a
+  substitute for either.
+- **Origin firewall:** allow `:80`/`:443` only from Cloudflare's published ranges
+  (`https://www.cloudflare.com/ips-v4` and `/ips-v6`). This is what makes
+  `CF-Connecting-IP` trustworthy — a client that can reach the origin directly
+  could spoof the header.
+- **Real-IP dependency:** the rate limiter and request log use the client IP
+  from `X-Forwarded-For`, trusting only loopback peers
+  (`HTTP_TRUSTED_PROXIES`, default `127.0.0.0/8,::1/128`). The nginx snippet
+  restores the real address with `set_real_ip_from` + `real_ip_header
+  CF-Connecting-IP`; keep that range list in sync with Cloudflare's published
+  ranges. Without it every user would share the Cloudflare edge's bucket.
+
+The drop-in server block is
+[`deploy/nginx/family-budget.conf`](../deploy/nginx/family-budget.conf); its
+[README](../deploy/nginx/README.md) has the short install guide.
 
 ## Database connection configuration
 
@@ -84,14 +127,20 @@ The connection-pool variables (`DATABASE_MAX_OPEN_CONNS`,
 
 ## First run
 
-1. Create the secret environment file and restrict it:
+Images are built on the dev PC (memory-rich) and shipped to the VPS; the VPS
+never runs a build. The end-to-end sequence is environment components → rsync →
+ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
+
+1. Prepare the environment components on the dev PC. `.env` is git-ignored and
+   never goes into an image; the rsync in step 2 carries it to the VPS (or
+   create it directly on the VPS afterwards):
 
    ```sh
    cp .env.example .env
    chmod 600 .env
    ```
 
-2. Edit `.env`:
+   Edit `.env`:
    - Set `POSTGRES_PASSWORD` to a long random value, e.g.
      `openssl rand -base64 32`. The same value is read by `db`, `api` and
      `migrate`; do not copy it into a URL and do not percent-encode it.
@@ -101,45 +150,41 @@ The connection-pool variables (`DATABASE_MAX_OPEN_CONNS`,
      other components accordingly).
    - Optionally set `API_HOST_PORT` (default `8080`); keep it in sync with the
      `proxy_pass` line in the nginx snippet.
+   - Leave `HTTP_TRUSTED_PROXIES` at its loopback default unless another
+     trusted proxy sits in front of nginx.
    - The public hostname is not app configuration: it lives in the nginx
-     `server_name` and in the Let's Encrypt certificate for the subdomain.
-   - Keep `.env` out of source control (it is already git-ignored) and never
-     copy it into an image.
+     `server_name`, the Let's Encrypt certificate and Cloudflare DNS.
+   - Keep `.env` out of source control and never copy it into an image.
 
-3. Install the nginx front door and certificate for the subdomain, exactly as
-   for the operator's other projects on this host:
+2. Sync the repository from the dev PC. The ship script does not copy files, and
+   the VPS must have the same `compose.yaml`, `deploy/` and `migrations/` as the
+   images you are about to ship:
 
    ```sh
-   # Replace budget.example.com (CHANGE-ME) in the snippet first.
-   sudo cp deploy/nginx/family-budget.conf /etc/nginx/sites-available/
-   sudo ln -s /etc/nginx/sites-available/family-budget.conf \
-       /etc/nginx/sites-enabled/family-budget.conf
-   sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d budget.example.com
+   # On the dev PC, in the repository root:
+   rsync -a --exclude .git ./ <ssh-host>:/opt/family-budget/
    ```
 
-   nginx returns 502 until the API is started below; that is expected.
-
-4. Check interpolation before starting anything:
+3. Build and ship the application images from the dev PC:
 
    ```sh
+   scripts/ship-image.sh --host <ssh-host>
+   ```
+
+   This runs `docker compose build` locally, then `docker save` → `scp` →
+   `docker load` on the VPS. Use `--load-only` to skip the rebuild, `--dry-run`
+   to inspect the commands, and `--keep-tarball` to keep the transfer file. The
+   upstream `postgres:18.6` image is not shipped; pull it on the VPS if it is
+   missing (`docker compose pull db`).
+
+4. Check interpolation on the VPS before starting anything:
+
+   ```sh
+   cd /opt/family-budget
    docker compose config
    ```
 
-5. Build the application images:
-
-   ```sh
-   docker compose build
-   ```
-
-6. Start PostgreSQL and wait for it to become healthy:
-
-   ```sh
-   docker compose up -d db
-   docker compose ps
-   ```
-
-7. Apply the schema explicitly. The API binary never migrates on startup
+5. Apply the schema explicitly. The API binary never migrates on startup
    (`cmd/server/main.go`); the reviewed Goose files in `migrations/` are the
    schema authority:
 
@@ -148,38 +193,59 @@ The connection-pool variables (`DATABASE_MAX_OPEN_CONNS`,
    docker compose run --rm migrate status   # verify applied versions
    ```
 
-8. Start the remaining services:
+6. Start the stack:
 
    ```sh
    docker compose up -d
+   docker compose ps
    ```
 
    `migrate` runs again as a one-shot service (Goose `up` is idempotent), then
    `api` starts only after it exits successfully and its `/readyz` healthcheck
    passes. nginx proxies to it on the loopback port.
 
-9. Verify:
+7. Install the nginx front door and certificate for the subdomain, exactly as
+   for the operator's other projects on this host:
 
    ```sh
-   docker compose ps
-   curl -fsS http://127.0.0.1:8080/readyz          # API directly, loopback
-   curl -fsS https://budget.example.com/healthz    # through nginx
-   curl -fsS https://budget.example.com/readyz
-   curl -sSI https://budget.example.com | grep -i strict-transport-security
+   # Replace budget-api.<domain> (CHANGE-ME) in the snippet first.
+   sudo cp deploy/nginx/family-budget.conf /etc/nginx/sites-available/
+   sudo ln -s /etc/nginx/sites-available/family-budget.conf \
+       /etc/nginx/sites-enabled/family-budget.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d budget-api.<domain>
+   ```
+
+   nginx returns 502 until the API is running. If HTTP-01 validation through
+   the Cloudflare proxy fails, temporarily grey-cloud the record for issuance
+   and switch it back to proxied afterwards.
+
+8. Configure Cloudflare (see [Cloudflare](#cloudflare)): proxy the
+   `budget-api.<domain>` record to the VPS, set SSL mode **Full (strict)**, turn
+   on **Always Use HTTPS**, and restrict origin `:80`/`:443` to Cloudflare's
+   ranges in the host firewall.
+
+9. Smoke-test through the public hostname:
+
+   ```sh
+   curl -fsS http://127.0.0.1:8080/readyz              # API directly, loopback
+   curl -fsS https://budget-api.<domain>/healthz       # through Cloudflare + nginx
+   curl -fsS https://budget-api.<domain>/readyz
+   curl -sSI https://budget-api.<domain> | grep -i strict-transport-security
    ```
 
    `/healthz` is liveness (process only). `/readyz` pings PostgreSQL and is the
-   probe used by Compose's healthcheck. The HTTPS checks confirm the host nginx
-   and its Let's Encrypt certificate are the working front door.
+   probe used by Compose's healthcheck. The HTTPS checks confirm Cloudflare,
+   the host nginx and its Let's Encrypt certificate are the working front door.
 
 ## Routine operations
 
 - Logs: `docker compose logs -f api` (json-file driver, 10 MB × 3 files per
   service). Application logs are structured JSON with request IDs; secrets and
   request bodies are not logged.
-- Restart: `docker compose restart api` or `docker compose up -d` after a
-  rebuild. The API receives SIGTERM and shuts down gracefully within
-  `HTTP_SHUTDOWN_TIMEOUT` (default 10s).
+- Restart: `docker compose restart api` or `docker compose up -d` after a new
+  image has been shipped with `scripts/ship-image.sh`. The API receives SIGTERM
+  and shuts down gracefully within `HTTP_SHUTDOWN_TIMEOUT` (default 10s).
 - Front door: hostname/certificate changes are `sudo nginx -t &&
   sudo systemctl reload nginx`. Certificate issuance and renewal stay in the
   host's existing certbot flow; the Compose stack does not manage TLS.
@@ -291,6 +357,11 @@ raising limits on a box that has no memory to spare.
   `.env*`). `db`, `api` and `migrate` receive the database components they need;
   the `api` and `migrate` binaries construct the connection URL internally. No
   proxy container receives database credentials.
+- Cloudflare is the only public entry point. Its origin firewall allows `:80`
+  and `:443` only from the published Cloudflare ranges, which is also what makes
+  `CF-Connecting-IP` (and therefore the restored real client IP used for rate
+  limiting) trustworthy. Only the loopback peer is a trusted proxy
+  (`HTTP_TRUSTED_PROXIES`).
 - nginx terminates TLS with the operator's existing Let's Encrypt certificate
   and sets HSTS, `X-Content-Type-Options`, `X-Frame-Options`,
   `Referrer-Policy` and `Cross-Origin-Opener-Policy` (same header set as the
@@ -303,7 +374,9 @@ raising limits on a box that has no memory to spare.
 `deploy/` contains Go tests that statically validate the Dockerfile, Compose
 file, nginx snippet and `.env.example` (pinned images, multi-stage build,
 non-root user, private database, loopback-only API, ordered migrations, log
-rotation, named volumes). They are guards, not container builds:
+rotation, named volumes, Cloudflare real-IP restoration) plus the
+`scripts/ship-image.sh` guard (no hardcoded host or credentials, `--help` runs
+nothing). They are guards, not container builds:
 
 ```sh
 go test ./deploy/...

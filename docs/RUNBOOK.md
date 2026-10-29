@@ -30,7 +30,7 @@ A running container is not enough; these signals must reach a human:
 | Low disk space | PostgreSQL and WAL stop accepting writes | Daily systemd timer checks `df` and pings only when free space drops below 15% (or on error); include `df -i` if inode pressure is a risk. |
 | Host memory pressure | OOM killer / swap thrash affects every project on the shared box | Daily (or 5-minute) timer checks `free`/`vmstat` and alerts when available memory is below 15% or the host is swapping steadily. |
 | Container OOM kill | A service restarts without an obvious application error | Check `docker inspect` for `OOMKilled`/exit 137 and `docker stats`; alert on unexpected restarts of `db`/`api`. |
-| Service health | API/DB outage or restart loop | External HTTP check on `https://budget.example.com/readyz` every 5 minutes. |
+| Service health | API/DB outage or restart loop | External HTTP check on `https://budget-api.<domain>/readyz` every 5 minutes. |
 | Owner-managed backup monitoring | Backup health is not handled in this repository | The owner's existing host-level backup infrastructure reports success, failure and freshness. |
 
 **Selected default:** [healthchecks.io](https://healthchecks.io/) free tier

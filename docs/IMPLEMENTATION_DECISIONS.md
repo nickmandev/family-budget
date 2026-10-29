@@ -95,6 +95,14 @@ This document records product-owner-approved resolutions to questions the canoni
 
 **Test impact.** Deployment static guards assert the loopback-only API binding, the absence of a `Caddyfile` and the shape of the nginx snippet. Container/TLS verification happens on the host.
 
+## Deployment topology (resolved by owner, 2026-10-27)
+
+**Rule.** Cloudflare fronts the Hetzner VPS: proxied DNS, bot protection and edge TLS with **Full (strict)** to the origin. Cloudflare targets the VPS's existing nginx + Let's Encrypt, which proxies only to the API's loopback binding (`127.0.0.1:8080`); PostgreSQL stays on the internal Compose network. The public subdomain is `budget-api`. Application images are built on the dev PC and shipped to the VPS with `docker save`/`docker load` (`scripts/ship-image.sh`); the VPS never builds them.
+
+**Rationale.** Builds are memory-intensive and the shared VPS is small, while the dev PC has headroom. Reusing the existing nginx + Let's Encrypt avoids a second ACME client contending for ports 80/443. Cloudflare adds bot protection and a stable edge certificate without changing the origin's trust model, provided the origin firewall allows only Cloudflare's published ranges.
+
+**Test impact.** The nginx guards assert the `set_real_ip_from` block and `real_ip_header CF-Connecting-IP`; `deploy/ship_test.go` guards the ship script and that no URL-style database variable is used; forwarded-client-IP behaviour (per-client rate-limit buckets, untrusted peers ignored) is pinned by transport tests.
+
 ## Backup tooling (removed by owner decision, 2026-10-27)
 
 **Rule.** The in-repo backup/restore scripts and backup runbook policy are
