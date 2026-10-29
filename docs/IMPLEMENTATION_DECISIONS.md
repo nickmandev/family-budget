@@ -95,39 +95,17 @@ This document records product-owner-approved resolutions to questions the canoni
 
 **Test impact.** Deployment static guards assert the loopback-only API binding, the absence of a `Caddyfile` and the shape of the nginx snippet. Container/TLS verification happens on the host.
 
-## Backup, restore and operations (resolved by implementation)
+## Backup tooling (removed by owner decision, 2026-10-27)
 
-These are implementation-level proposals that satisfy the operational
-contract in `SECURITY_AND_OPERATIONS.md` and `PLATFORM_DECISIONS.md` §F. They
-do not change accounting semantics. The canonical operations specification is
-left stable; the full procedure and drill checklist are in
-[`RUNBOOK.md`](RUNBOOK.md), and the scripts live in `scripts/`.
+**Rule.** The in-repo backup/restore scripts and backup runbook policy are
+removed. Database backups are owned by the deployment environment's existing
+infrastructure outside this repository.
 
-- **Backup method:** `pg_dump --format=custom` (`-Fc`) executed inside the `db`
-  container. A raw PGDATA copy is explicitly not the primary artifact.
-- **Encryption tool:** `age` (X25519 + ChaCha20-Poly1305). The public recipient
-  lives in the VPS `.env` as `BACKUP_ENCRYPTION_PUBLIC_KEY`; the private
-  identity lives only on the operator's machine/password manager. Backups are
-  encrypted before any off-host transfer.
-- **Off-host target:** Hetzner Storage Box via rsync over SSH (separate failure
-  domain, ≈ €3.81/month for the smallest 1 TB plan at the time of writing). An
-  S3-compatible alternative (Hetzner Object Storage ≈ €4.99/month for the
-  smallest plan; Backblaze B2 well under $0.10/month at this data size) is
-  documented but not implemented.
-- **Cadence and retention:** every 6 hours; 7 days of 6-hourly artifacts
-  off-host (28 files), 6 monthly archives, 8 local staging artifacts.
-- **RPO/RTO proposals:** RPO 6 hours (matching the cadence); RTO 30–60 minutes
-  for a personal instance. Both are targets until the first drill validates
-  them.
-- **Restore order:** restore the dump into a freshly created database → run
-  `goose up` for newer migrations → start `api` → run `verify-restore.sh`.
-  Restoration must precede migrations because the dump is the data authority
-  and the migration tool only applies versions newer than the dump.
-- **Alerting:** healthchecks.io free tier (€0) dead-man's-switch for backup
-  success/staleness and a daily disk check, plus an external `/readyz` check.
-  The runbook includes systemd timer and cron examples.
-- **Drill cadence:** before the first production launch (quality gate 6), then
-  quarterly and after changes to the backup path or database major version.
+**Rationale.** The owner runs an existing host-level backup practice and does
+not want a parallel backup path maintained in this codebase.
+
+**Test impact.** The `deploy/backup` static guards are removed; migration and
+integration runners are unaffected.
 
 ## Still open (not resolved by this document)
 

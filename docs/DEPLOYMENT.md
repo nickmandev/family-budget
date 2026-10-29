@@ -216,7 +216,7 @@ and when a reload is enough versus a restart). Key choices:
   the worst case across 25 connections bounded; a household workload does not
   need large sorts.
 - `max_connections = 25` — the API pool is 10, plus migrate, the healthcheck,
-  backups and an operator session, with headroom.
+  host-level maintenance and an operator session, with headroom.
 - `wal_buffers = 4MB`, `min_wal_size = 128MB`, `max_wal_size = 1GB`,
   `checkpoint_timeout = 15min` — low traffic means fewer, larger checkpoints;
   this reduces fsync bursts and bounds WAL on a small disk.
@@ -239,13 +239,13 @@ limit comfortably below `max_connections`; see the connection budget in
 - **Container memory** (`docker stats --no-stream`): watch `db` and `api` against
   their limits. `docker inspect` shows `OOMKilled` and the configured limit.
 - **Disk** (`df -h`, `df -i`): PostgreSQL WAL, the `pgdata` volume, Docker
-  images/logs and local backups all share the VPS disk.
+  images/logs and other host data all share the VPS disk.
 - **PostgreSQL** (`pg_stat_activity`, slow query log if enabled,
   `SHOW max_connections`): connection saturation or repeated temp-file spills
   are signals to revisit `work_mem` or the pool.
 - **API** (`/readyz`, structured logs): latency and restart counts.
 
-Alerting wiring for these signals is in [`RUNBOOK.md`](RUNBOOK.md) §5. If the
+Alerting wiring for these signals is in [`RUNBOOK.md`](RUNBOOK.md) §1. If the
 host starts swapping or OOM-killing containers, use the
 [degraded host / OOM snippet](RUNBOOK.md#degraded-host--oom) rather than simply
 raising limits on a box that has no memory to spare.
@@ -284,26 +284,24 @@ validated in CI or on the deployment host, where a Docker daemon is available.
 
 ## Operations
 
-Day-to-day backup, restore, retention, alerting and incident procedures live
-in [`RUNBOOK.md`](RUNBOOK.md). That runbook records the selected defaults:
-`pg_dump -Fc` inside the `db` container, `age` encryption before transfer,
-rsync over SSH to a Hetzner Storage Box, 6-hourly cadence, count-based
-retention, proposed RPO/RTO and the mandatory restore drill.
+Day-to-day monitoring and incident procedures live in
+[`RUNBOOK.md`](RUNBOOK.md). The runbook covers alerting for host memory/swap,
+disk and `/readyz` health, and the degraded-host/OOM, database-startup and
+data-consistency incident snippets.
 
-The supporting scripts are:
+Database backups are managed outside this repository by the owner's existing
+infrastructure; this repository ships no backup/restore tooling. Schema changes
+are applied with the reviewed Goose files, and the integration runner validates
+the persistence layer against a disposable PostgreSQL:
 
 ```sh
-scripts/backup.sh --help           # encrypted dump + off-host upload
-scripts/restore.sh --help          # clean restore, migrations, API start
-scripts/verify-restore.sh --help   # connectivity/schema/consistency/readiness
+scripts/integration-test.sh --all --race
 ```
 
-- **Backups and recovery:** see [`RUNBOOK.md`](RUNBOOK.md) §1–§4. The TODO list
-  that used to live here (target, schedule, retention, key custody, RPO/RTO,
-  restore rehearsal, backup alerting) is resolved there.
-- **Monitoring and alerting:** see [`RUNBOOK.md`](RUNBOOK.md) §5. Backup
-  failure, stale-backup age, low disk and `/readyz` checks are covered by the
-  proposed healthchecks.io + systemd timer setup.
+- **Monitoring and alerting:** see [`RUNBOOK.md`](RUNBOOK.md) §1. Low disk,
+  host memory pressure, container OOM kills and `/readyz` checks are covered
+  there.
+- **Incidents:** see [`RUNBOOK.md`](RUNBOOK.md) §2 for degraded-host/OOM,
+  database-startup/corruption and data-consistency guidance.
 - **Staging:** still open. Until a staging environment exists, use an isolated
-  directory/stack on the VPS (or a fresh VPS) for restore drills, as described
-  in the runbook.
+  directory/stack on the VPS (or a fresh VPS) for validation.
