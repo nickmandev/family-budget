@@ -5,13 +5,15 @@
 # The PostgreSQL adapter tests skip themselves when no database is configured.
 # This script makes the real run one command: it starts a throwaway PostgreSQL
 # (Docker, Podman, or a local initdb cluster), waits for it to accept
-# connections, exports TEST_POSTGRES_DSN, runs the tests with -count=1, and
-# removes the container/cluster on exit. Nothing is written to the repository.
+# connections, exports the TEST_POSTGRES_* connection components, runs the
+# tests with -count=1, and removes the container/cluster on exit. Nothing is
+# written to the repository.
 #
 # Usage: scripts/integration-test.sh [OPTIONS]
 #
 # The compose stack intentionally does not publish PostgreSQL to the host, so
-# this runner always uses its own disposable instance (or an explicit DSN).
+# this runner always uses its own disposable instance (or an already-running
+# database described by TEST_POSTGRES_* components).
 # See internal/adapters/postgres/README.md and docs/RUNBOOK.md.
 
 set -euo pipefail
@@ -31,34 +33,41 @@ usage() {
 Usage: scripts/integration-test.sh [OPTIONS]
 
 Provision a disposable PostgreSQL, run the integration suite against it, then
-tear it down. Prefers Docker, then Podman, then a local initdb cluster. An
-explicit DSN bypasses provisioning entirely.
+tear it down. Prefers Docker, then Podman, then a local initdb cluster. Setting
+TEST_POSTGRES_HOST in the environment bypasses provisioning and uses those
+connection components instead.
 
 Options:
   --engine NAME      Container engine to use: auto, docker, podman, or local
                      (default: auto; local means a temporary initdb cluster).
   --port N           Loopback port for the disposable server (default: 55432).
-  --dsn URL          Use an already-running PostgreSQL instead of provisioning.
-                     TEST_POSTGRES_DSN in the environment has the same effect.
   --all              Run every package (go test ./...) instead of only the
                      PostgreSQL adapter integration package.
   --race             Add -race to the test run.
-  --keep-db          Leave the container/cluster running and print its DSN.
+  --keep-db          Leave the container/cluster running and print the
+                     TEST_POSTGRES_* components needed to reuse it.
   -h, --help         Show this help and exit.
 
 Environment:
-  PG_IMAGE           PostgreSQL image for container engines
-                     (default: postgres:18.6, matching compose.yaml).
-  TEST_POSTGRES_DSN  Existing DSN to use instead of provisioning.
-  TEST_DB_USER       Disposable database user (default: test).
-  TEST_DB_PASSWORD   Disposable database password (default: test).
-  TEST_DB_NAME       Disposable database name (default: test).
+  PG_IMAGE                  PostgreSQL image for container engines
+                            (default: postgres:18.6, matching compose.yaml).
+  TEST_POSTGRES_HOST        Existing database host; when set, no database is
+  TEST_POSTGRES_PORT        provisioned and these components are used as-is.
+  TEST_POSTGRES_USER        The suite reads them directly (the application
+  TEST_POSTGRES_PASSWORD    variables without the TEST_ prefix are not used).
+  TEST_POSTGRES_DB
+  TEST_POSTGRES_SSLMODE
+  TEST_DB_USER              Disposable database user (default: test).
+  TEST_DB_PASSWORD          Disposable database password (default: test).
+  TEST_DB_NAME              Disposable database name (default: test).
 
 Examples:
   scripts/integration-test.sh
   scripts/integration-test.sh --race --all
   scripts/integration-test.sh --engine podman --port 55433
-  TEST_POSTGRES_DSN='postgres://user:pass@host:5432/db?sslmode=disable' \
+  TEST_POSTGRES_HOST=127.0.0.1 TEST_POSTGRES_PORT=5432 \
+    TEST_POSTGRES_USER=user TEST_POSTGRES_PASSWORD=pass \
+    TEST_POSTGRES_DB=db TEST_POSTGRES_SSLMODE=disable \
     scripts/integration-test.sh --all
 
 A non-zero exit means the suite failed or the database could not be
@@ -72,7 +81,10 @@ PORT="55432"
 KEEP_DB=0
 RACE=0
 RUN_ALL=0
-EXTERNAL_DSN="${TEST_POSTGRES_DSN:-}"
+EXTERNAL_DB=0
+if [[ -n "${TEST_POSTGRES_HOST:-}" ]]; then
+	EXTERNAL_DB=1
+fi
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -84,11 +96,6 @@ while [[ $# -gt 0 ]]; do
 	--port)
 		[[ $# -ge 2 ]] || die "--port requires a value"
 		PORT="$2"
-		shift
-		;;
-	--dsn)
-		[[ $# -ge 2 ]] || die "--dsn requires a value"
-		EXTERNAL_DSN="$2"
 		shift
 		;;
 	--all) RUN_ALL=1 ;;
@@ -117,14 +124,13 @@ ENGINE_USED=""
 PG_BIN=""
 STARTED_CONTAINER=0
 STARTED_CLUSTER=0
-DSN=""
 
 cleanup() {
 	local status=$?
 	set +e
 	if (( KEEP_DB )); then
-		if [[ -n "$DSN" ]]; then
-			log "keeping database; TEST_POSTGRES_DSN=$DSN"
+		if (( ! EXTERNAL_DB )); then
+			log "keeping database; export TEST_POSTGRES_HOST=127.0.0.1 TEST_POSTGRES_PORT=$PORT TEST_POSTGRES_USER=$PG_USER TEST_POSTGRES_PASSWORD=$PG_PASSWORD TEST_POSTGRES_DB=$PG_DB TEST_POSTGRES_SSLMODE=disable"
 		fi
 		exit "$status"
 	fi
@@ -274,21 +280,23 @@ start_local() {
 	fi
 }
 
-if [[ -n "$EXTERNAL_DSN" ]]; then
-	DSN="$EXTERNAL_DSN"
-	log "using externally provided PostgreSQL DSN (no provisioning)"
+if (( EXTERNAL_DB )); then
+	log "using externally provided PostgreSQL components (no provisioning)"
 else
 	RESOLVED_ENGINE="$(resolve_engine)" || die \
-		"no database backend available: install docker/podman, install PostgreSQL, or pass --dsn"
+		"no database backend available: install docker/podman, install PostgreSQL, or set TEST_POSTGRES_HOST"
 	if [[ "$RESOLVED_ENGINE" == local ]]; then
 		start_local
 	else
 		start_container "$RESOLVED_ENGINE"
 	fi
-	DSN="postgres://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PORT}/${PG_DB}?sslmode=disable"
+	export TEST_POSTGRES_HOST=127.0.0.1
+	export TEST_POSTGRES_PORT="$PORT"
+	export TEST_POSTGRES_USER="$PG_USER"
+	export TEST_POSTGRES_PASSWORD="$PG_PASSWORD"
+	export TEST_POSTGRES_DB="$PG_DB"
+	export TEST_POSTGRES_SSLMODE=disable
 fi
-
-export TEST_POSTGRES_DSN="$DSN"
 
 cd -- "$REPO_ROOT"
 

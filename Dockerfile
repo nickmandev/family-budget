@@ -8,7 +8,8 @@
 #
 # The server binary never migrates on startup (cmd/server/main.go). The schema
 # authority is the Goose migration set in migrations/, applied by the one-shot
-# `migrate` service built from the `migrate` stage below.
+# `migrate` service built from the `migrate` stage below. Both binaries share
+# the same Go DSN helper (internal/config), so no shell constructs a URL.
 
 # --- builder: compile the static server binary -----------------------------
 FROM golang:1.25.14-bookworm AS builder
@@ -22,33 +23,31 @@ RUN go mod download
 COPY . .
 
 # CGO_ENABLED=0 keeps the runtime image free of a libc/toolchain and makes the
-# result a portable static binary.
+# result a portable static binary. The migrate entrypoint is built here too so
+# it imports the same pinned Goose library and the shared DSN helper.
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
-
-# --- goose-builder: compile the pinned migration runner --------------------
-# Goose is built from source at a pinned module version instead of running a
-# floating third-party image. The result is a static binary.
-FROM golang:1.25.14-bookworm AS goose-builder
-
-RUN CGO_ENABLED=0 GOBIN=/out go install github.com/pressly/goose/v3/cmd/goose@v3.27.3
+        -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
+    && CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate
 
 # --- migrate: one-shot schema runner (compose service `migrate`) -----------
+# Goose is a pinned module dependency (go.mod), not a floating binary/image.
 FROM alpine:3.24.3 AS migrate
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 app \
     && adduser -S -u 10001 -G app -H app
 
-COPY --from=goose-builder /out/goose /usr/local/bin/goose
+COPY --from=builder /out/migrate /migrate
 COPY migrations /migrations
 
 USER 10001:10001
 WORKDIR /migrations
 
-# DATABASE_URL is expanded at run time. CMD is appended to the shell so
-# `docker compose run --rm migrate status` and friends work unchanged.
-ENTRYPOINT ["/bin/sh", "-c", "exec goose -dir /migrations postgres \"$DATABASE_URL\" \"$@\"", "--"]
+# The DSN is constructed inside the binary from POSTGRES_* components. Extra
+# arguments (for example `status` or `down`) are appended to the entrypoint, so
+# `docker compose run --rm migrate status` works unchanged.
+ENTRYPOINT ["/migrate", "-dir", "/migrations"]
 CMD ["up"]
 
 # --- runtime: the API server ----------------------------------------------

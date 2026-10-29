@@ -25,7 +25,13 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      TEST_POSTGRES_DSN: postgres://test:test@127.0.0.1:5432/test?sslmode=disable
+      # TEST_POSTGRES_* is the mirror of the application connection components.
+      TEST_POSTGRES_HOST: 127.0.0.1
+      TEST_POSTGRES_PORT: 5432
+      TEST_POSTGRES_USER: test
+      TEST_POSTGRES_PASSWORD: test
+      TEST_POSTGRES_DB: test
+      TEST_POSTGRES_SSLMODE: disable
     steps:
       - uses: actions/checkout@v4
 
@@ -48,12 +54,12 @@ jobs:
       - name: Build
         run: go build ./...
 
-      # No DSN: the PostgreSQL adapter tests skip themselves, so this is the
-      # database-independent unit run.
+      # No TEST_POSTGRES_HOST: the PostgreSQL adapter tests skip themselves,
+      # so this is the database-independent unit run.
       - name: Unit tests
         run: go test -count=1 ./...
         env:
-          TEST_POSTGRES_DSN: ""
+          TEST_POSTGRES_HOST: ""
 
       - name: Integration suite (real PostgreSQL)
         run: scripts/integration-test.sh --all

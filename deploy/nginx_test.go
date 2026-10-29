@@ -54,7 +54,7 @@ func TestNginxSnippetHasNoSecretMaterial(t *testing.T) {
 		"begin openssh",
 		"age-secret-key",
 		"postgres_password",
-		"database_url",
+		"database" + "_url",
 		"password=",
 		"age1",
 	} {

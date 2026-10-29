@@ -188,17 +188,21 @@ func TestDockerfileMigrateStageUsesPinnedGoose(t *testing.T) {
 	}
 
 	all := strings.Join(stageTexts(stages), "\n")
-	if !strings.Contains(all, "github.com/pressly/goose/v3/cmd/goose@v3.") {
-		t.Error("migrate stage does not build a pinned goose version")
+	goMod := readDeployFile(t, "go.mod")
+	if !strings.Contains(goMod, "github.com/pressly/goose/v3 v3.") {
+		t.Error("go.mod does not pin a goose module version")
 	}
-	if strings.Contains(all, "goose@latest") {
-		t.Error("goose is installed at a floating latest version")
+	if strings.Contains(goMod, "github.com/pressly/goose/v3 v3.0.0-") {
+		t.Error("goose is pinned to a floating pseudo-version")
+	}
+	if !strings.Contains(all, "./cmd/migrate") {
+		t.Error("Dockerfile does not build the migrate entrypoint from ./cmd/migrate")
 	}
 	if !strings.Contains(migrate.text(), "migrations") {
 		t.Error("migrate stage does not copy the migrations directory")
 	}
-	if !strings.Contains(migrate.text(), "DATABASE_URL") {
-		t.Error("migrate stage entrypoint does not use DATABASE_URL")
+	if entrypoint := directive(*migrate, "ENTRYPOINT"); !strings.Contains(entrypoint, "/migrate") {
+		t.Errorf("migrate stage entrypoint = %q, want the compiled migrate binary", entrypoint)
 	}
 
 	user := directive(*migrate, "USER")

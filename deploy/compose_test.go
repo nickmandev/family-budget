@@ -187,12 +187,29 @@ func TestComposeTopology(t *testing.T) {
 		t.Errorf("migrate build target = %+v, want the Dockerfile migrate stage", migrate.Build)
 	}
 
-	// Secrets stay with the service that needs them; TLS is the host's job.
-	if _, ok := api.Environment["POSTGRES_PASSWORD"]; ok {
-		t.Error("api must not receive POSTGRES_PASSWORD; it needs only DATABASE_URL")
+	// Secrets stay with the services that need them. The api and migrate
+	// binaries construct the connection URL internally, so both receive the
+	// POSTGRES_* components; the db container needs only the initdb trio.
+	for _, name := range []string{"api", "migrate"} {
+		service := doc.Services[name]
+		for _, component := range []string{
+			"POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
+			"POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_SSLMODE",
+		} {
+			if _, ok := service.Environment[component]; !ok {
+				t.Errorf("%s does not receive %s; it must build the DSN from components", name, component)
+			}
+		}
 	}
-	if _, ok := db.Environment["DATABASE_URL"]; ok {
-		t.Error("db must not receive DATABASE_URL; only api and migrate need it")
+	for _, component := range []string{"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"} {
+		if _, ok := db.Environment[component]; !ok {
+			t.Errorf("db does not receive %s", component)
+		}
+	}
+	for _, component := range []string{"POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_SSLMODE"} {
+		if _, ok := db.Environment[component]; ok {
+			t.Errorf("db receives %s; only api and migrate need connection components", component)
+		}
 	}
 	for name, service := range doc.Services {
 		for _, gone := range []string{"DOMAIN", "ACME_EMAIL"} {
@@ -437,10 +454,12 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 	example := readDeployFile(t, ".env.example")
 
 	required := []string{
+		"POSTGRES_HOST",
+		"POSTGRES_PORT",
 		"POSTGRES_USER",
 		"POSTGRES_PASSWORD",
 		"POSTGRES_DB",
-		"DATABASE_URL",
+		"POSTGRES_SSLMODE",
 		"API_HOST_PORT",
 		"PORT",
 		"HTTP_MAX_BODY_BYTES",

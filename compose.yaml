@@ -90,8 +90,15 @@ services:
       target: migrate
     image: family-budget/migrate:1.0.0
     restart: "no"
+    # The migrate binary builds the connection URL from these components; it
+    # never accepts a user-supplied URL.
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
     depends_on:
       db:
         condition: service_healthy
@@ -110,10 +117,16 @@ services:
       target: runtime
     image: family-budget/api:1.0.0
     restart: unless-stopped
-    # Every name below is read by internal/config/config.go. Defaults match
-    # config.Default so a minimal .env still starts.
+    # Every name below is read by internal/config/config.go. The database
+    # connection is supplied as components; the server constructs the URL
+    # internally. Defaults match config.Default so a minimal .env still starts.
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
       # Bounded pool, well inside PostgreSQL's max_connections = 25.
       DATABASE_MAX_OPEN_CONNS: ${DATABASE_MAX_OPEN_CONNS:-10}
       DATABASE_MAX_IDLE_CONNS: ${DATABASE_MAX_IDLE_CONNS:-5}
