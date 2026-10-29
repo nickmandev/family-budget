@@ -31,6 +31,11 @@ func TestNginxSnippetProxiesToLoopbackAPI(t *testing.T) {
 		"X-Content-Type-Options",
 		"X-Frame-Options",
 		"Referrer-Policy",
+		// Cloudflare proxies the edge, so the snippet must restore the real
+		// client IP from CF-Connecting-IP within the published ranges.
+		"set_real_ip_from",
+		"real_ip_header CF-Connecting-IP",
+		"https://www.cloudflare.com/ips-v4",
 	}
 	for _, want := range required {
 		if !strings.Contains(snippet, want) {
