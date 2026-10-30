@@ -18,6 +18,8 @@ func TestNginxSnippetProxiesToLoopbackAPI(t *testing.T) {
 		"server_name budget.example.com;",
 		"CHANGE-ME",
 		"return 301 https://",
+		"1.25.1",
+		"listen 443 ssl http2;",
 		"listen 443 ssl",
 		"ssl_certificate",
 		"ssl_certificate_key",
@@ -79,6 +81,8 @@ func TestNginxSnippetIsDocumented(t *testing.T) {
 		"systemctl reload nginx",
 		"certbot",
 		"/readyz",
+		"1.25.1",
+		"listen 443 ssl http2;",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("deploy/nginx/README.md does not mention %q", want)

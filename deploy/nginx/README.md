@@ -5,6 +5,14 @@ existing nginx is the sole public front door. TLS and certificate renewal stay
 in the operator's existing Let's Encrypt flow — there is no ACME client in the
 Compose stack.
 
+## Requirements
+
+The snippet uses `http2 on;`, which requires nginx >= 1.25.1. With older nginx,
+replace the HTTPS listen lines with `listen 443 ssl http2;` and
+`listen [::]:443 ssl http2;`, then drop the `http2 on;` directive.
+
+Remediation: upgrade via the official nginx.org stable repository, or use the older listen syntax above.
+
 ## Install
 
 ```sh
