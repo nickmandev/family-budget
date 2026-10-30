@@ -25,15 +25,15 @@ type Middleware func(http.Handler) http.Handler
 //
 // Server order (see NewServer):
 //
-//	RequestID -> Logging -> Recovery -> MaxBodyBytes -> Timeout -> routes
+//	RequestID -> Recovery -> CORS -> Logging -> MaxBodyBytes -> Timeout -> routes
 //
 // RequestID is outermost so every log line and error envelope carries the same
-// id. Logging wraps Recovery so a recovered panic is still logged with its
-// final status. Recovery wraps the body/timeout middleware so a panic in a
-// handler (including one re-raised from Timeout's goroutine) becomes a clean
-// 500. MaxBodyBytes sits before Timeout so an oversized body is rejected
-// without consuming the request timeout budget. Per-route authentication adds
-// one more wrapper inside this chain for protected routes only.
+// id. Recovery wraps CORS and the remaining middleware so panics become a clean
+// 500. CORS runs before logging, body limits, timeout and routing so preflights
+// are answered cheaply without entering those layers. MaxBodyBytes sits before
+// Timeout so an oversized body is rejected without consuming the request
+// timeout budget. Per-route authentication adds one more wrapper inside this
+// chain for protected routes only.
 func Chain(handler http.Handler, middleware ...Middleware) http.Handler {
 	for i := len(middleware) - 1; i >= 0; i-- {
 		handler = middleware[i](handler)

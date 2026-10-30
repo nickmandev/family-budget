@@ -41,13 +41,14 @@ const (
 
 	EnvPort = "PORT"
 
-	EnvHTTPReadHeaderTimeout = "HTTP_READ_HEADER_TIMEOUT"
-	EnvHTTPReadTimeout       = "HTTP_READ_TIMEOUT"
-	EnvHTTPWriteTimeout      = "HTTP_WRITE_TIMEOUT"
-	EnvHTTPIdleTimeout       = "HTTP_IDLE_TIMEOUT"
-	EnvHTTPRequestTimeout    = "HTTP_REQUEST_TIMEOUT"
-	EnvHTTPShutdownTimeout   = "HTTP_SHUTDOWN_TIMEOUT"
-	EnvHTTPMaxBodyBytes      = "HTTP_MAX_BODY_BYTES"
+	EnvHTTPReadHeaderTimeout  = "HTTP_READ_HEADER_TIMEOUT"
+	EnvHTTPReadTimeout        = "HTTP_READ_TIMEOUT"
+	EnvHTTPWriteTimeout       = "HTTP_WRITE_TIMEOUT"
+	EnvHTTPIdleTimeout        = "HTTP_IDLE_TIMEOUT"
+	EnvHTTPRequestTimeout     = "HTTP_REQUEST_TIMEOUT"
+	EnvHTTPShutdownTimeout    = "HTTP_SHUTDOWN_TIMEOUT"
+	EnvHTTPMaxBodyBytes       = "HTTP_MAX_BODY_BYTES"
+	EnvHTTPCORSAllowedOrigins = "HTTP_CORS_ALLOWED_ORIGINS"
 
 	// EnvHTTPTrustedProxies lists the peer CIDRs whose forwarding headers
 	// (X-Forwarded-For, X-Real-IP) may be trusted. The default is loopback
@@ -67,9 +68,10 @@ const (
 
 // Config is the validated process configuration.
 type Config struct {
-	Database DatabaseConfig
-	HTTP     HTTPConfig
-	Auth     AuthConfig
+	Database               DatabaseConfig
+	HTTP                   HTTPConfig
+	Auth                   AuthConfig
+	HTTPCORSAllowedOrigins []string
 }
 
 // DatabaseConfig holds the database connection components and the
@@ -174,6 +176,7 @@ func Default() Config {
 			RateLimitMax:    10,
 			RateLimitWindow: time.Minute,
 		},
+		HTTPCORSAllowedOrigins: []string{},
 	}
 }
 
@@ -273,6 +276,12 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 			add("%s contains invalid CIDR %q", EnvHTTPTrustedProxies, cidr)
 		}
 	}
+
+	corsOrigins, err := lookupCORSOrigins(lookup, EnvHTTPCORSAllowedOrigins)
+	if err != nil {
+		problems = append(problems, err)
+	}
+	cfg.HTTPCORSAllowedOrigins = corsOrigins
 
 	cfg.Auth.Argon2.Time = uint32(lookupInt(lookup, EnvArgon2Time, int(cfg.Auth.Argon2.Time), add))
 	cfg.Auth.Argon2.MemoryKiB = uint32(lookupInt64(lookup, EnvArgon2MemoryKiB, int64(cfg.Auth.Argon2.MemoryKiB), add))
@@ -379,6 +388,129 @@ func lookupCSV(lookup LookupFunc, key string, fallback []string) []string {
 		}
 	}
 	return values
+}
+
+func lookupCORSOrigins(lookup LookupFunc, key string) ([]string, error) {
+	raw, ok := lookup(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return []string{}, nil
+	}
+
+	origins := make([]string, 0)
+	seen := make(map[string]struct{})
+	var problems []error
+	for _, part := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+		origin, err := normalizeOrigin(entry)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s contains invalid origin %q: %w", key, entry, err))
+			continue
+		}
+		if _, exists := seen[origin]; exists {
+			problems = append(problems, fmt.Errorf("%s contains duplicate origin %q after normalization", key, origin))
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins, errors.Join(problems...)
+}
+
+func normalizeOrigin(value string) (string, error) {
+	if strings.Contains(value, "*") {
+		return "", errors.New("wildcards are not allowed")
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", errors.New("must be a valid http or https origin")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("scheme must be http or https")
+	}
+	if u.Opaque != "" || u.User != nil || u.Host == "" || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+		return "", errors.New("must contain only a scheme and host, with no path, query or fragment")
+	}
+
+	hostname := u.Hostname()
+	if hostname == "" {
+		return "", errors.New("host must not be empty")
+	}
+	if net.ParseIP(hostname) == nil && !validOriginHostname(hostname) {
+		return "", errors.New("host is malformed")
+	}
+
+	port, hasPort, err := originPort(u.Host)
+	if err != nil {
+		return "", err
+	}
+	host := strings.ToLower(hostname)
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if hasPort {
+		host += ":" + port
+	}
+	return scheme + "://" + host, nil
+}
+
+func originPort(authority string) (string, bool, error) {
+	var port string
+	if strings.HasPrefix(authority, "[") {
+		close := strings.IndexByte(authority, ']')
+		if close < 0 {
+			return "", false, errors.New("host is malformed")
+		}
+		suffix := authority[close+1:]
+		if suffix == "" {
+			return "", false, nil
+		}
+		if !strings.HasPrefix(suffix, ":") {
+			return "", false, errors.New("host is malformed")
+		}
+		port = suffix[1:]
+	} else {
+		if strings.Count(authority, ":") > 1 {
+			return "", false, errors.New("IPv6 hosts must be enclosed in brackets")
+		}
+		if index := strings.LastIndexByte(authority, ':'); index >= 0 {
+			port = authority[index+1:]
+		}
+	}
+	if port == "" {
+		if strings.HasSuffix(authority, ":") {
+			return "", false, errors.New("port must not be empty")
+		}
+		return "", false, nil
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil || value < 0 || value > 65535 {
+		return "", false, errors.New("port must be a number between 0 and 65535")
+	}
+	return port, true, nil
+}
+
+func validOriginHostname(hostname string) bool {
+	if strings.HasSuffix(hostname, ".") {
+		hostname = strings.TrimSuffix(hostname, ".")
+	}
+	if hostname == "" {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Validate reports missing or malformed connection components. Every error

@@ -58,6 +58,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Auth.RateLimitMax != defaults.Auth.RateLimitMax {
 		t.Errorf("rate limit max = %d, want %d", cfg.Auth.RateLimitMax, defaults.Auth.RateLimitMax)
 	}
+	if len(cfg.HTTPCORSAllowedOrigins) != 0 {
+		t.Errorf("CORS allowed origins = %v, want disabled by default", cfg.HTTPCORSAllowedOrigins)
+	}
 
 	want := defaults.Database
 	want.Host = "localhost"
@@ -68,6 +71,62 @@ func TestLoadFromDefaults(t *testing.T) {
 	want.SSLMode = "disable"
 	if cfg.Database != want {
 		t.Errorf("database = %+v, want %+v", cfg.Database, want)
+	}
+}
+
+func TestLoadFromHTTPCORSAllowedOrigins(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{name: "unset"},
+		{name: "single", value: "https://budget.example", want: []string{"https://budget.example"}},
+		{name: "multiple", value: "https://budget.example,http://localhost:3000", want: []string{"https://budget.example", "http://localhost:3000"}},
+		{name: "whitespace", value: " https://BUDGET.example , , http://localhost:3000 ", want: []string{"https://budget.example", "http://localhost:3000"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			if test.name != "unset" {
+				environment[EnvHTTPCORSAllowedOrigins] = test.value
+			}
+			cfg, err := LoadFrom(lookupFrom(environment))
+			if err != nil {
+				t.Fatalf("LoadFrom: %v", err)
+			}
+			if strings.Join(cfg.HTTPCORSAllowedOrigins, ",") != strings.Join(test.want, ",") {
+				t.Errorf("CORS allowed origins = %v, want %v", cfg.HTTPCORSAllowedOrigins, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadFromRejectsInvalidHTTPCORSAllowedOrigins(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "wildcard", value: "*"},
+		{name: "path", value: "https://budget.example/app"},
+		{name: "trailing slash", value: "https://budget.example/"},
+		{name: "malformed", value: "https://[not-an-ip"},
+		{name: "duplicate after normalization", value: "https://BUDGET.example, https://budget.example"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			environment[EnvHTTPCORSAllowedOrigins] = test.value
+			_, err := LoadFrom(lookupFrom(environment))
+			if err == nil {
+				t.Fatal("LoadFrom accepted invalid CORS allowed origins")
+			}
+			if !strings.Contains(err.Error(), EnvHTTPCORSAllowedOrigins) {
+				t.Errorf("error %q does not name %s", err, EnvHTTPCORSAllowedOrigins)
+			}
+		})
 	}
 }
 

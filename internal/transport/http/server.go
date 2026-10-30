@@ -83,8 +83,11 @@ func NewServer(deps Dependencies) (*Server, error) {
 	server.handler = Chain(
 		mux,
 		RequestID(),
-		Logging(deps.Logger, newClientIPResolver(deps.Config.HTTP.TrustedProxies)),
 		Recovery(deps.Logger),
+		// CORS is deliberately ahead of logging, limits, per-route auth and
+		// routing so browser preflights are answered before those layers run.
+		corsMiddleware(deps.Config.HTTPCORSAllowedOrigins, HeaderRequestID),
+		Logging(deps.Logger, newClientIPResolver(deps.Config.HTTP.TrustedProxies)),
 		MaxBodyBytes(deps.Config.HTTP.MaxBodyBytes),
 		Timeout(deps.Config.HTTP.RequestTimeout),
 	)
