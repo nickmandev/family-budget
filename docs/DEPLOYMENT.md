@@ -127,7 +127,9 @@ same variable names to the services that consume them.
 The browser frontend origin is `https://budget.nickmandev.com`. The API's CORS
 allowlist permits that exact origin; browser preflights are answered before
 authentication and rate limiting. CORS is not authorization: protected API
-routes still require a bearer token. To add another frontend origin, add it to
+routes still require a bearer token. Preflights allow the `Authorization`,
+`Content-Type`, `Idempotency-Key` and `X-Request-ID` request headers. To add
+another frontend origin, add it to
 `HTTP_CORS_ALLOWED_ORIGINS` as a comma-separated exact origin and restart the
 `api` service.
 

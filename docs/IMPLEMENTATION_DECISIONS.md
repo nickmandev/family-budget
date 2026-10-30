@@ -144,7 +144,9 @@ rate limiting. The API does not enable credentials mode.
 **Rationale.** The browser frontend at `budget.nickmandev.com` calls the API
 cross-origin. Bearer-token authentication requires `Authorization` in
 `Access-Control-Allow-Headers`, and financial mutations require
-`Idempotency-Key`; neither CORS nor a successful preflight grants API access.
+`Idempotency-Key`. The allowed request headers are `Authorization`,
+`Content-Type`, `Idempotency-Key` and `X-Request-ID`; neither CORS nor a
+successful preflight grants API access.
 
 **Test impact.** Middleware tests cover allowed and disallowed origins,
 preflight handling and disabled configuration. Deployment static guards assert

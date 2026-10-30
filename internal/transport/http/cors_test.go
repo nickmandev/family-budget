@@ -84,7 +84,7 @@ func TestCORSMiddlewareAllowedPreflightBypassesAuthentication(t *testing.T) {
 	for name, want := range map[string]string{
 		"Access-Control-Allow-Origin":   testCORSOrigin,
 		"Access-Control-Allow-Methods":  "GET, POST, PATCH, DELETE, OPTIONS",
-		"Access-Control-Allow-Headers":  "Authorization, Content-Type, Idempotency-Key",
+		"Access-Control-Allow-Headers":  corsAllowedHeaders,
 		"Access-Control-Max-Age":        "600",
 		"Access-Control-Expose-Headers": HeaderRequestID,
 	} {

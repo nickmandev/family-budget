@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const corsAllowedHeaders = "Authorization, Content-Type, Idempotency-Key, X-Request-ID"
+
 // corsMiddleware applies the configured allowlist. Exact-origin matching only
 // (no wildcards); CORS is a browser-enforcement mechanism, never an
 // authorization check — the API still requires a bearer token on every
@@ -34,7 +36,7 @@ func corsMiddleware(allowed []string, requestIDHeader string) func(http.Handler)
 				if allowedOrigin {
 					setCORSOriginHeaders(w.Header(), origin, requestIDHeader)
 					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-					w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+					w.Header().Set("Access-Control-Allow-Headers", corsAllowedHeaders)
 					w.Header().Set("Access-Control-Max-Age", "600")
 				}
 				w.WriteHeader(http.StatusNoContent)
