@@ -116,6 +116,21 @@ same variable names to the services that consume them.
 | `POSTGRES_DB` | `family_budget` | `db`, `api`, `migrate` |
 | `POSTGRES_SSLMODE` | `disable` on the private network | `api`, `migrate` |
 
+### HTTP and frontend configuration
+
+| Variable | Example | Consumed by |
+|----------|---------|-------------|
+| `HTTP_CORS_ALLOWED_ORIGINS` | `https://budget.nickmandev.com` (comma-separated exact origins; empty disables CORS) | `api` |
+
+#### Frontend / CORS
+
+The browser frontend origin is `https://budget.nickmandev.com`. The API's CORS
+allowlist permits that exact origin; browser preflights are answered before
+authentication and rate limiting. CORS is not authorization: protected API
+routes still require a bearer token. To add another frontend origin, add it to
+`HTTP_CORS_ALLOWED_ORIGINS` as a comma-separated exact origin and restart the
+`api` service.
+
 `internal/config` constructs the `postgres://` URL internally with proper
 percent-encoding and the selected `sslmode`; `cmd/migrate` calls the same helper,
 so server, migrations and tests can never disagree. **Never construct or paste a

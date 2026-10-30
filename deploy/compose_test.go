@@ -491,6 +491,30 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 	}
 }
 
+func TestComposeCORSAllowlistWiring(t *testing.T) {
+	doc := loadCompose(t)
+	api := requireService(t, doc, "api")
+	if _, ok := api.Environment[config.EnvHTTPCORSAllowedOrigins]; !ok {
+		t.Errorf("api does not receive %s", config.EnvHTTPCORSAllowedOrigins)
+	}
+	for _, name := range []string{"db", "migrate"} {
+		service := requireService(t, doc, name)
+		if _, ok := service.Environment[config.EnvHTTPCORSAllowedOrigins]; ok {
+			t.Errorf("%s receives %s; only api needs the CORS allowlist", name, config.EnvHTTPCORSAllowedOrigins)
+		}
+	}
+
+	example := readDeployFile(t, ".env.example")
+	if !strings.Contains(example, config.EnvHTTPCORSAllowedOrigins+"=") {
+		t.Errorf(".env.example does not document %s", config.EnvHTTPCORSAllowedOrigins)
+	}
+	deploymentDocs := strings.ToLower(readDeployFile(t, "docs/DEPLOYMENT.md"))
+	if !strings.Contains(deploymentDocs, "preflights are answered before") ||
+		!strings.Contains(deploymentDocs, "cors is not authorization") {
+		t.Error("docs/DEPLOYMENT.md must document preflight behaviour and that CORS is not authorization")
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

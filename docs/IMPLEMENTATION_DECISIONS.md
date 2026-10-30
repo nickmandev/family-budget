@@ -135,6 +135,21 @@ Because the migrate entrypoint reuses the same Go helper, no shell parity test i
 needed; a `cmd/migrate` test asserts the reuse. Static deploy guards assert the
 URL-style variables are gone and that compose wires the component family.
 
+## CORS policy (resolved by owner, 2026-10-30)
+
+**Rule.** Exact-origin allowlist from `HTTP_CORS_ALLOWED_ORIGINS`, empty by
+default (disabled). Preflight requests short-circuit before authentication and
+rate limiting. The API does not enable credentials mode.
+
+**Rationale.** The browser frontend at `budget.nickmandev.com` calls the API
+cross-origin. Bearer-token authentication requires `Authorization` in
+`Access-Control-Allow-Headers`, and financial mutations require
+`Idempotency-Key`; neither CORS nor a successful preflight grants API access.
+
+**Test impact.** Middleware tests cover allowed and disallowed origins,
+preflight handling and disabled configuration. Deployment static guards assert
+that the environment variable is wired to the API and documented.
+
 ## Still open (not resolved by this document)
 
 No decision has been made yet on the following. They should not block domain work, but each needs a documented proposal with trade-offs before it is finalized:
