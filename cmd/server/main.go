@@ -16,6 +16,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	// The runtime image is a minimal Alpine image without the tzdata package, so
+	// the IANA database must be embedded for time.LoadLocation to resolve household
+	// timezones (validation and effective-date handling).
+	_ "time/tzdata"
+
 	"family-budget/internal/adapters/postgres"
 	"family-budget/internal/application"
 	"family-budget/internal/auth"
