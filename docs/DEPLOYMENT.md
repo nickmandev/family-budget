@@ -409,6 +409,11 @@ Day-to-day monitoring and incident procedures live in
 disk and `/readyz` health, and the degraded-host/OOM, database-startup and
 data-consistency incident snippets.
 
+Household timezones require the IANA database. The server binary embeds it via
+`time/tzdata`, and the Alpine runtime additionally installs `tzdata`, so
+`time.LoadLocation` works in the container. A missing database surfaces as
+`INVALID_VALUE` when creating a household with a non-UTC timezone.
+
 Database backups are managed outside this repository by the owner's existing
 infrastructure; this repository ships no backup/restore tooling. Schema changes
 are applied with the reviewed Goose files, and the integration runner validates

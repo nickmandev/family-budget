@@ -52,11 +52,12 @@ CMD ["up"]
 
 # --- runtime: the API server ----------------------------------------------
 # Alpine is chosen over distroless because the image needs a health-check
-# utility (busybox wget) for the compose probe; ca-certificates is the only
-# extra package. The server runs as the numeric non-root UID 10001.
+# utility (busybox wget) for the compose probe; ca-certificates and tzdata are
+# installed for TLS and timezone support. The server runs as the numeric
+# non-root UID 10001.
 FROM alpine:3.24.3 AS runtime
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S -g 10001 app \
     && adduser -S -u 10001 -G app -H app
 
