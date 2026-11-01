@@ -11,6 +11,7 @@ Start here when handing this specification to engineering agents.
 - [`DECISIONS.yaml`](DECISIONS.yaml) — compact machine-readable index of the selected defaults.
 - [`AGENT_BRIEF.md`](AGENT_BRIEF.md) — implementation mission, constraints, and expected deliverables.
 - [`STACK_DECISIONS.md`](STACK_DECISIONS.md) — confirmed Go/GORM/PostgreSQL/`net/http` stack, migration discipline, and testing strategy.
+- [`ENABLE_BANKING_INTEGRATION_PLAN.md`](ENABLE_BANKING_INTEGRATION_PLAN.md) — proposed post-MVP AIS integration architecture, accounting boundaries, rollout gates, and open approvals.
 
 ## Recommended reading order for agents
 
