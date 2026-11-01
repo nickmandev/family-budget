@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll GitHub release tags for Family Budget (user %i)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+Persistent=true
+Unit=family-budget-release-check@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -18,8 +18,8 @@ internet ──> Cloudflare (proxied DNS, edge TLS, bot protection)
 
 | Service   | Image                        | Network(s)        | Host ports | Restart         |
 |-----------|------------------------------|-------------------|------------|-----------------|
-| `api`     | `family-budget/api:1.0.0`    | `backend`, `frontend` | `127.0.0.1:8080` (loopback only) | `unless-stopped`|
-| `migrate` | `family-budget/migrate:1.0.0`| `backend`         | none       | one-shot (`"no"`)|
+| `api`     | `family-budget/api:${APP_VERSION}`    | `backend`, `frontend` | `127.0.0.1:8080` (loopback only) | `unless-stopped`|
+| `migrate` | `family-budget/migrate:${APP_VERSION}`| `backend`         | none       | one-shot (`"no"`)|
 | `db`      | `postgres:18.6`              | `backend` (internal) | none    | `unless-stopped`|
 
 - `backend` is an `internal: true` Compose network. PostgreSQL is attached only
@@ -45,8 +45,10 @@ current pins were chosen from the stable releases available at authoring time:
 | `postgres:18.6` | Current PostgreSQL 18 stable minor (PLATFORM_DECISIONS §D requires 18.x with an explicit pin). |
 | goose `v3.27.3` | Built from source in the Dockerfile (last release compatible with Go 1.25). |
 
-`family-budget/api:1.0.0` and `family-budget/migrate:1.0.0` are local
+`family-budget/api:<version>` and `family-budget/migrate:<version>` are local
 application release tags built from this repository, not upstream images.
+`APP_VERSION` selects the matching pair; it defaults to `1.0.0` for existing
+installations and is updated by the release deployment workflow.
 
 To upgrade: change the pin, run the deployment checks, rebuild, and record the
 new version in this table. Read the upstream release notes first; PostgreSQL
@@ -63,8 +65,10 @@ major upgrades require a dump/restore, not just a tag bump.
   on this host, with Let's Encrypt certificates and renewal as usual.
 - Host firewall allowing SSH, plus inbound TCP 80 and 443 **only from the
   Cloudflare ranges** (and UDP 443 only if HTTP/3 is desired).
-- Repository synced to the host with `rsync`. Images are built on the dev PC and
-  shipped, not built on the VPS. No container binds a public port.
+- For bootstrap/manual recovery, the repository and deployment files are synced
+  to the host with `rsync`; images are built off-host, not on the memory-limited
+  VPS. For regular version releases, the GitHub Actions workflow builds and
+  transfers the versioned images. No container binds a public port.
 
 ## Cloudflare
 
@@ -278,6 +282,103 @@ ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
 - Resource limits (`deploy.resources.limits`): db 0.75 CPU / 768 MiB, api
   0.75 CPU / 256 MiB, migrate 0.25 CPU / 256 MiB. These are ceilings, not
   reservations; see [Resource footprint / sizing](#resource-footprint--sizing).
+
+## Automated release deployment
+
+The workflow in `.github/workflows/ci.yml` runs the normal verification suite on
+pull requests and `main` pushes. When a `vMAJOR.MINOR.PATCH` tag is pushed to a
+commit already on `main`, it runs verification and publishes versioned API and
+migration images to GitHub Container Registry (GHCR). It does **not** connect to
+the VPS or require a Hetzner SSH secret.
+
+The VPS-side systemd timer polls the existing clone for new stable tags reachable
+from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
+it pulls the matching GHCR images, applies migrations, recreates the API, and
+waits for the Compose health check. This keeps the deployment credentials and
+restart action on the VPS instead of allowing a GitHub runner to SSH into it.
+
+### GHCR setup
+
+The release job publishes these two packages using the workflow's
+`GITHUB_TOKEN` with `packages: write` permission:
+
+- `ghcr.io/nickmandev/family-budget-api:<version>`
+- `ghcr.io/nickmandev/family-budget-migrate:<version>`
+
+Set the package visibility in GitHub to **public** for unauthenticated pulls, or
+log in to GHCR on the VPS as the same deployment user that runs the timer using a
+read-only `read:packages` token. For a private package, keep that token in the
+deployment user's Docker credential store; never put it in `.env`, Compose, the
+repository, or the image. Confirm the resulting image package names match
+`IMAGE_REGISTRY` and `IMAGE_OWNER` in the VPS `.env`.
+
+### Install the VPS release poller
+
+The cloned repository must be at `/opt/family-budget`, have an `origin` remote
+that can fetch `main` and tags, and be writable by the deployment user so Git
+can update its refs. That user must be able to update `.env`, access the Docker
+socket, and pull the GHCR packages. The timer checks every five minutes; no
+inbound webhook or additional public port is needed. The poller does not check
+out or reset the clone: it archives the selected release's deployment files
+into a temporary directory and installs those files only after the release
+image is available.
+
+Install the systemd templates and enable the timer for the repository/deployment
+user (replace `family-budget-deploy` with the account that owns the clone):
+
+```sh
+sudo install -m 0644 deploy/systemd/family-budget-release-check@.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/family-budget-release-check@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now family-budget-release-check@family-budget-deploy.timer
+systemctl list-timers 'family-budget-release-check@*'
+```
+
+Ensure that user belongs to the `docker` group (which is effectively
+root-equivalent) and can fetch the repository. For private GHCR packages, log in
+as that user, using a read-only `read:packages` token:
+
+```sh
+echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u nickmandev --password-stdin
+```
+
+Do not put the token in shell history, `.env`, or a unit file. Prefer public
+GHCR packages if consistent with your distribution choice. Inspect poller logs
+with:
+
+```sh
+sudo journalctl -u family-budget-release-check@family-budget-deploy.service
+```
+
+Restrict creation of `v*` release tags to trusted maintainers. The timer checks
+that a tag is reachable from `origin/main`, refuses downgrades, and serializes
+its own runs with a lock. It refuses to run if the cloned checkout has tracked
+local changes; keep production configuration in the ignored `.env` rather than
+editing tracked Compose or script files on the VPS.
+
+### Releasing
+
+Create a stable semantic-version tag on a commit already merged to `main` and
+push it:
+
+```sh
+git tag -a v1.2.3 -m "Release v1.2.3"
+git push origin v1.2.3
+```
+
+The workflow maps `v1.2.3` to the GHCR image tag and the poller updates only
+`APP_VERSION` in the VPS `.env`. `.env.example` defaults it to `1.0.0` for
+existing installations. The deploy script restores the previous app version and
+restarts the prior image if pulling, migration, or readiness fails. It does **not**
+reverse a database migration. Use backward-compatible expand/contract migrations
+and never rely on automatic schema rollback.
+
+Manual recovery remains available with `scripts/ship-image.sh`; set
+`APP_VERSION` to the same version in the VPS `.env` before running Compose with
+the shipped images. `scripts/check-release.sh` and `scripts/deploy-release.sh`
+are intended to run through the systemd timer, not as public endpoints. The
+poller uses `git archive` from the selected tag, so the deployed Compose and
+deployment script correspond to the same tagged source as the container images.
 
 ## Resource footprint / sizing
 

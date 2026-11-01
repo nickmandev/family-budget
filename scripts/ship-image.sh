@@ -15,10 +15,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 
+compose_env_value() {
+	local name="$1"
+	if [[ -f "$REPO_ROOT/.env" ]]; then
+		sed -n "s/^${name}=//p" "$REPO_ROOT/.env" | tail -n 1
+	fi
+}
+
 # Application images referenced by compose.yaml. postgres is an upstream image
-# and is pulled on the VPS, not shipped from here.
-API_IMAGE="${API_IMAGE:-family-budget/api:1.0.0}"
-MIGRATE_IMAGE="${MIGRATE_IMAGE:-family-budget/migrate:1.0.0}"
+# and is pulled on the VPS, not shipped from here. Explicit exported values win;
+# otherwise use the local Compose .env if present.
+APP_VERSION="${APP_VERSION:-$(compose_env_value APP_VERSION)}"
+APP_VERSION="${APP_VERSION:-1.0.0}"
+[[ "$APP_VERSION" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+	printf '[ship] ERROR: APP_VERSION contains characters that are not valid in a Docker tag\n' >&2
+	exit 1
+}
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-$(compose_env_value IMAGE_REGISTRY)}"
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io}"
+IMAGE_OWNER="${IMAGE_OWNER:-$(compose_env_value IMAGE_OWNER)}"
+IMAGE_OWNER="${IMAGE_OWNER:-nickmandev}"
+API_IMAGE="${API_IMAGE:-$IMAGE_REGISTRY/$IMAGE_OWNER/family-budget-api:$APP_VERSION}"
+MIGRATE_IMAGE="${MIGRATE_IMAGE:-$IMAGE_REGISTRY/$IMAGE_OWNER/family-budget-migrate:$APP_VERSION}"
 
 log() { printf '[ship] %s\n' "$*" >&2; }
 die() {
