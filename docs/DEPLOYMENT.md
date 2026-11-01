@@ -373,6 +373,24 @@ restarts the prior image if pulling, migration, or readiness fails. It does **no
 reverse a database migration. Use backward-compatible expand/contract migrations
 and never rely on automatic schema rollback.
 
+### Release smoke check
+
+To verify the delivery path without changing API behavior, a documentation-only
+commit can be merged to `main` and tagged with the next version. Confirm the tag
+run publishes both GHCR packages, then allow the VPS timer one polling interval
+(five minutes). On the VPS, verify the `APP_VERSION` update, API container
+creation time, and `/readyz` response:
+
+```sh
+grep '^APP_VERSION=' /opt/family-budget/.env
+cd /opt/family-budget && docker compose ps
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+The tag must be greater than the currently deployed `APP_VERSION`; the poller
+intentionally refuses equal or older releases. For example, if the current
+version is `0.1.0`, use `v0.1.1` for a smoke check.
+
 Manual recovery remains available with `scripts/ship-image.sh`; set
 `APP_VERSION` to the same version in the VPS `.env` before running Compose with
 the shipped images. `scripts/check-release.sh` and `scripts/deploy-release.sh`
