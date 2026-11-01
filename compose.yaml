@@ -21,8 +21,8 @@ name: family-budget
 #
 # Image pins (re-check the stable minor at upgrade time; never use `latest`):
 #   postgres:18.6  - current PostgreSQL 18 stable minor at authoring time
-# The api/migrate images are built locally from the pinned Dockerfile; the 1.0.0
-# tag is an application release tag, not a floating upstream tag.
+# The api/migrate images are built from the pinned Dockerfile. APP_VERSION is a
+# release version (for example 1.2.3) and defaults to 1.0.0 for existing installs.
 
 x-logging: &default-logging
   driver: json-file
@@ -88,7 +88,7 @@ services:
     build:
       context: .
       target: migrate
-    image: family-budget/migrate:1.0.0
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER:-nickmandev}/family-budget-migrate:${APP_VERSION:-1.0.0}
     restart: "no"
     # The migrate binary builds the connection URL from these components; it
     # never accepts a user-supplied URL.
@@ -115,7 +115,7 @@ services:
     build:
       context: .
       target: runtime
-    image: family-budget/api:1.0.0
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER:-nickmandev}/family-budget-api:${APP_VERSION:-1.0.0}
     restart: unless-stopped
     # Every name below is read by internal/config/config.go. The database
     # connection is supplied as components; the server constructs the URL
