@@ -293,9 +293,13 @@ the VPS or require a Hetzner SSH secret.
 
 The VPS-side systemd timer polls the existing clone for new stable tags reachable
 from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
-it pulls the matching GHCR images, applies migrations, recreates the API, and
-waits for the Compose health check. This keeps the deployment credentials and
-restart action on the VPS instead of allowing a GitHub runner to SSH into it.
+it waits for both matching GHCR images to become pullable (up to six minutes),
+then applies migrations, recreates the API, and waits for the Compose health
+check. If publication is still in progress after that bounded wait, it defers
+without changing the running version; the next timer poll retries. This handles
+the race where Git tags appear before the tag-triggered image builds finish.
+This keeps the deployment credentials and restart action on the VPS instead of
+allowing a GitHub runner to SSH into it.
 
 ### GHCR setup
 

@@ -45,7 +45,7 @@ cleanup() {
 		cp "$backup_env" .env
 		cp "$backup_compose" compose.yaml
 		cp "$backup_postgres" deploy/postgres/99-small-vps.conf
-		docker compose up -d --no-deps --force-recreate api || printf 'WARNING: previous API image restart failed\n' >&2
+		docker compose up -d --no-deps --no-build --force-recreate api || printf 'WARNING: previous API image restart failed\n' >&2
 	fi
 	if [[ -n "$env_tmp" ]]; then
 		rm -f "$env_tmp"
@@ -78,7 +78,7 @@ install -m 0644 "$release_files/deploy/postgres/99-small-vps.conf" deploy/postgr
 docker compose config >/dev/null
 docker compose pull api migrate
 docker compose run --rm migrate
-docker compose up -d --no-deps --force-recreate api
+docker compose up -d --no-deps --no-build --force-recreate api
 
 healthy=0
 for attempt in $(seq 1 45); do

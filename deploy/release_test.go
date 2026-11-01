@@ -48,7 +48,16 @@ func TestVPSReleaseScriptsParseAndKeepSafetySteps(t *testing.T) {
 		}
 	}
 	poller := readDeployFile(t, "scripts/check-release.sh")
-	for _, want := range []string{"git fetch", "git tag --merged origin/main", "sort -V", "flock", "deploy-release.sh"} {
+	for _, want := range []string{
+		"git fetch",
+		"git tag --merged origin/main",
+		"sort -V",
+		"flock",
+		"docker compose pull api migrate",
+		"seq 1 12",
+		"deferring %s",
+		"deploy-release.sh",
+	} {
 		if !strings.Contains(poller, want) {
 			t.Errorf("release poller does not contain %q", want)
 		}
@@ -57,7 +66,7 @@ func TestVPSReleaseScriptsParseAndKeepSafetySteps(t *testing.T) {
 	for _, want := range []string{
 		"docker compose pull api migrate",
 		"docker compose run --rm migrate",
-		"docker compose up -d --no-deps --force-recreate api",
+		"docker compose up -d --no-deps --no-build --force-recreate api",
 		".State.Health.Status",
 		"restoring the previous app version/configuration",
 	} {
