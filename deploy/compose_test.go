@@ -26,6 +26,7 @@ type composeDocument struct {
 
 type composeService struct {
 	Image       string         `yaml:"image"`
+	Entrypoint  []string       `yaml:"entrypoint"`
 	Build       *build         `yaml:"build"`
 	Command     []string       `yaml:"command"`
 	Ports       []string       `yaml:"ports"`
@@ -62,7 +63,11 @@ type build struct {
 type envMap map[string]*string
 
 type health struct {
-	Test []string `yaml:"test"`
+	Test        []string `yaml:"test"`
+	Interval    string   `yaml:"interval"`
+	Timeout     string   `yaml:"timeout"`
+	Retries     int      `yaml:"retries"`
+	StartPeriod string   `yaml:"start_period"`
 }
 
 type dependsOn map[string]struct {
@@ -105,6 +110,7 @@ func TestComposeTopology(t *testing.T) {
 	doc := loadCompose(t)
 	db := requireService(t, doc, "db")
 	api := requireService(t, doc, "api")
+	worker := requireService(t, doc, "worker")
 	migrate := requireService(t, doc, "migrate")
 
 	// (a) Caddy is gone; the host nginx is the public front door.
@@ -183,6 +189,44 @@ func TestComposeTopology(t *testing.T) {
 	if api.Build == nil || api.Build.Target != "runtime" {
 		t.Errorf("api build target = %+v, want the Dockerfile runtime stage", api.Build)
 	}
+	if worker.Build != nil {
+		t.Errorf("worker has a separate build configuration %+v; it must use the api image", worker.Build)
+	}
+	if worker.Image != api.Image {
+		t.Errorf("worker image = %q, want api image %q", worker.Image, api.Image)
+	}
+	if len(worker.Entrypoint) != 1 || worker.Entrypoint[0] != "/worker" {
+		t.Errorf("worker entrypoint = %v, want [/worker]", worker.Entrypoint)
+	}
+	if !contains(worker.Networks, "backend") || len(worker.Networks) != 1 {
+		t.Errorf("worker networks = %v, want backend only", worker.Networks)
+	}
+	if len(worker.Ports) != 0 || len(worker.Expose) != 0 {
+		t.Errorf("worker publishes or exposes ports: ports=%v expose=%v", worker.Ports, worker.Expose)
+	}
+	if got := worker.DependsOn["db"].Condition; got != "service_healthy" {
+		t.Errorf("worker depends_on db = %q, want service_healthy", got)
+	}
+	if got := worker.DependsOn["migrate"].Condition; got != "service_completed_successfully" {
+		t.Errorf("worker depends_on migrate = %q, want service_completed_successfully", got)
+	}
+	if worker.Restart != "unless-stopped" {
+		t.Errorf("worker restart = %q, want unless-stopped", worker.Restart)
+	}
+	if worker.Healthcheck == nil || !strings.Contains(strings.Join(worker.Healthcheck.Test, " "), "/healthz") {
+		t.Error("worker has no /healthz healthcheck")
+	}
+	if worker.Logging == nil {
+		t.Error("worker has no logging configuration")
+	}
+	if worker.Deploy == nil || worker.Deploy.Resources.Limits.CPUs != "0.25" || worker.Deploy.Resources.Limits.Memory != "128m" {
+		t.Errorf("worker resource limits = %+v, want 0.25 CPU and 128m", worker.Deploy)
+	}
+	for _, name := range []string{"api", "worker"} {
+		if !contains(doc.Services[name].Volumes, "./secrets:/run/secrets:ro") {
+			t.Errorf("%s volumes = %v, want read-only secrets directory mount", name, doc.Services[name].Volumes)
+		}
+	}
 	if migrate.Build == nil || migrate.Build.Target != "migrate" {
 		t.Errorf("migrate build target = %+v, want the Dockerfile migrate stage", migrate.Build)
 	}
@@ -190,7 +234,7 @@ func TestComposeTopology(t *testing.T) {
 	// Secrets stay with the services that need them. The api and migrate
 	// binaries construct the connection URL internally, so both receive the
 	// POSTGRES_* components; the db container needs only the initdb trio.
-	for _, name := range []string{"api", "migrate"} {
+	for _, name := range []string{"api", "migrate", "worker"} {
 		service := doc.Services[name]
 		for _, component := range []string{
 			"POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
@@ -200,6 +244,25 @@ func TestComposeTopology(t *testing.T) {
 				t.Errorf("%s does not receive %s; it must build the DSN from components", name, component)
 			}
 		}
+	}
+	for _, name := range []string{"api", "worker"} {
+		service := doc.Services[name]
+		for _, component := range []string{
+			"ENABLEBANKING_ENABLED", "ENABLEBANKING_APPLICATION_ID", "ENABLEBANKING_PRIVATE_KEY_FILE",
+			"ENABLEBANKING_REDIRECT_URL", "ENABLEBANKING_RESULT_URL", "ENABLEBANKING_BASE_URL",
+			"ENABLEBANKING_TOKEN_TTL", "ENABLEBANKING_COUNTRY", "ENABLEBANKING_SYNC_INTERVAL",
+			"ENABLEBANKING_ENCRYPTION_KEY",
+		} {
+			if _, ok := service.Environment[component]; !ok {
+				t.Errorf("%s does not receive %s", name, component)
+			}
+		}
+	}
+	if _, ok := worker.Environment["SYNCWORKER_PORT"]; !ok {
+		t.Error("worker does not receive SYNCWORKER_PORT")
+	}
+	if _, ok := worker.Environment["GOMEMLIMIT"]; !ok {
+		t.Error("worker does not receive GOMEMLIMIT")
 	}
 	for _, component := range []string{"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"} {
 		if _, ok := db.Environment[component]; !ok {
@@ -248,7 +311,7 @@ func TestComposeImagesPinnedAndLogged(t *testing.T) {
 	}
 
 	// Long-running services restart; the one-shot migration does not.
-	for _, name := range []string{"db", "api"} {
+	for _, name := range []string{"db", "api", "worker"} {
 		if restart := doc.Services[name].Restart; restart != "unless-stopped" {
 			t.Errorf("%s restart = %q, want unless-stopped", name, restart)
 		}
@@ -274,6 +337,16 @@ func TestComposeHealthAndDependencies(t *testing.T) {
 	if api.Healthcheck == nil || len(api.Healthcheck.Test) == 0 {
 		t.Fatal("api has no healthcheck")
 	}
+	worker := requireService(t, doc, "worker")
+	if worker.Healthcheck == nil || len(worker.Healthcheck.Test) == 0 {
+		t.Fatal("worker has no healthcheck")
+	}
+	if joined := strings.Join(worker.Healthcheck.Test, " "); !strings.Contains(joined, "/healthz") || !strings.Contains(joined, "$${SYNCWORKER_PORT}") {
+		t.Errorf("worker healthcheck = %q, want worker /healthz probe", joined)
+	}
+	if worker.Healthcheck.Interval != "15s" || worker.Healthcheck.Timeout != "5s" || worker.Healthcheck.Retries != 5 || worker.Healthcheck.StartPeriod != "20s" {
+		t.Errorf("worker healthcheck settings = %+v, want 15s/5s/5/20s", worker.Healthcheck)
+	}
 	if joined := strings.Join(api.Healthcheck.Test, " "); !strings.Contains(joined, "/readyz") {
 		t.Errorf("api healthcheck = %q, want the /readyz readiness probe", joined)
 	}
@@ -287,6 +360,12 @@ func TestComposeHealthAndDependencies(t *testing.T) {
 	}
 	if got := api.DependsOn["db"].Condition; got != "service_healthy" {
 		t.Errorf("api depends_on db = %q, want service_healthy", got)
+	}
+	if got := worker.DependsOn["db"].Condition; got != "service_healthy" {
+		t.Errorf("worker depends_on db = %q, want service_healthy", got)
+	}
+	if got := worker.DependsOn["migrate"].Condition; got != "service_completed_successfully" {
+		t.Errorf("worker depends_on migrate = %q, want service_completed_successfully", got)
 	}
 	if _, ok := api.DependsOn["caddy"]; ok {
 		t.Error("api still depends_on caddy")
@@ -307,6 +386,7 @@ func TestComposeResourceLimits(t *testing.T) {
 		{service: "db", minMem: 512 << 20, maxMem: 1 << 30},
 		{service: "api", minMem: 128 << 20, maxMem: 256 << 20},
 		{service: "migrate", minMem: 64 << 20, maxMem: 256 << 20},
+		{service: "worker", minMem: 64 << 20, maxMem: 128 << 20},
 	}
 	for _, tc := range cases {
 		service := requireService(t, doc, tc.service)
@@ -466,6 +546,17 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 		"AUTH_ARGON2_TIME",
 		"AUTH_SESSION_TTL",
 		"AUTH_RATE_LIMIT_MAX",
+		"SYNCWORKER_PORT",
+		"ENABLEBANKING_ENABLED",
+		"ENABLEBANKING_APPLICATION_ID",
+		"ENABLEBANKING_PRIVATE_KEY_FILE",
+		"ENABLEBANKING_REDIRECT_URL",
+		"ENABLEBANKING_RESULT_URL",
+		"ENABLEBANKING_BASE_URL",
+		"ENABLEBANKING_TOKEN_TTL",
+		"ENABLEBANKING_COUNTRY",
+		"ENABLEBANKING_SYNC_INTERVAL",
+		"ENABLEBANKING_ENCRYPTION_KEY",
 	}
 	for _, name := range required {
 		if !strings.Contains(example, name+"=") {

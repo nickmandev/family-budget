@@ -169,6 +169,12 @@ func TestDockerfileRuntimeIsNonRootAndStatic(t *testing.T) {
 	if !strings.Contains(all, "go build") || !strings.Contains(all, "./cmd/server") {
 		t.Error("Dockerfile does not run `go build ... ./cmd/server`")
 	}
+	if !strings.Contains(all, "./cmd/syncworker") {
+		t.Error("Dockerfile does not build the sync worker from ./cmd/syncworker")
+	}
+	if !strings.Contains(final.text(), "COPY --from=builder /out/worker /worker") {
+		t.Error("runtime stage does not copy the compiled worker binary")
+	}
 	if !strings.Contains(all, `-ldflags="-s -w"`) || !strings.Contains(all, "-trimpath") {
 		t.Error("Dockerfile build is missing -trimpath and -ldflags=\"-s -w\"")
 	}
@@ -222,7 +228,7 @@ func TestDockerignoreKeepsBuildInputsAndExcludesSecrets(t *testing.T) {
 		lines[line] = true
 	}
 
-	for _, required := range []string{".git", ".env", ".env.*"} {
+	for _, required := range []string{".git", ".env", ".env.*", "secrets"} {
 		if !lines[required] {
 			t.Errorf(".dockerignore does not exclude %q", required)
 		}
