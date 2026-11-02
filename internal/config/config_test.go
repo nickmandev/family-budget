@@ -65,6 +65,7 @@ func TestLoadFromDefaults(t *testing.T) {
 		cfg.EnableBanking.ApplicationID != defaults.EnableBanking.ApplicationID ||
 		cfg.EnableBanking.PrivateKeyFile != defaults.EnableBanking.PrivateKeyFile ||
 		cfg.EnableBanking.RedirectURL != defaults.EnableBanking.RedirectURL ||
+		cfg.EnableBanking.ResultURL != defaults.EnableBanking.ResultURL ||
 		cfg.EnableBanking.BaseURL != defaults.EnableBanking.BaseURL ||
 		cfg.EnableBanking.TokenTTL != defaults.EnableBanking.TokenTTL ||
 		cfg.EnableBanking.Country != defaults.EnableBanking.Country ||
@@ -111,6 +112,7 @@ func TestLoadFromEnableBankingEnabled(t *testing.T) {
 		ApplicationID:  "123e4567-e89b-12d3-a456-426614174000",
 		PrivateKeyFile: "/run/secrets/enablebanking-key.pem",
 		RedirectURL:    "https://budget-api.nickmandev.com/callbacks/enablebanking",
+		ResultURL:      "",
 		BaseURL:        "https://api.enablebanking.com",
 		TokenTTL:       5 * time.Minute,
 		Country:        "BG",
@@ -119,9 +121,45 @@ func TestLoadFromEnableBankingEnabled(t *testing.T) {
 	if config.EnableBanking.Enabled != want.Enabled || !bytes.Equal(config.EnableBanking.EncryptionKey, want.EncryptionKey) ||
 		config.EnableBanking.ApplicationID != want.ApplicationID || config.EnableBanking.PrivateKeyFile != want.PrivateKeyFile ||
 		config.EnableBanking.RedirectURL != want.RedirectURL || config.EnableBanking.BaseURL != want.BaseURL ||
+		config.EnableBanking.ResultURL != want.ResultURL ||
 		config.EnableBanking.TokenTTL != want.TokenTTL || config.EnableBanking.Country != want.Country ||
 		config.EnableBanking.SyncInterval != want.SyncInterval {
 		t.Errorf("Enable Banking = %+v, want %+v", config.EnableBanking, want)
+	}
+}
+
+func TestLoadFromEnableBankingResultURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		valid   bool
+		wantURL string
+	}{
+		{name: "valid", value: "https://budget.nickmandev.com/bank/callback", valid: true, wantURL: "https://budget.nickmandev.com/bank/callback"},
+		{name: "empty", valid: true},
+		{name: "relative", value: "/bank/callback"},
+		{name: "remote http", value: "http://budget.example/bank/callback"},
+		{name: "query", value: "https://budget.example/bank/callback?status=done"},
+		{name: "loopback http", value: "http://localhost:3000/bank/callback", valid: true, wantURL: "http://localhost:3000/bank/callback"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			if test.value != "" {
+				environment[EnvEnableBankingResultURL] = test.value
+			}
+			cfg, err := LoadFrom(lookupFrom(environment))
+			if test.valid {
+				if err != nil {
+					t.Fatalf("LoadFrom: %v", err)
+				}
+				if cfg.EnableBanking.ResultURL != test.wantURL {
+					t.Errorf("ResultURL = %q, want %q", cfg.EnableBanking.ResultURL, test.wantURL)
+				}
+				return
+			}
+			assertEnableBankingErrorNames(t, err, EnvEnableBankingResultURL)
+		})
 	}
 }
 

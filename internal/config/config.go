@@ -71,6 +71,7 @@ const (
 	EnvEnableBankingApplicationID  = "ENABLEBANKING_APPLICATION_ID"
 	EnvEnableBankingPrivateKeyFile = "ENABLEBANKING_PRIVATE_KEY_FILE"
 	EnvEnableBankingRedirectURL    = "ENABLEBANKING_REDIRECT_URL"
+	EnvEnableBankingResultURL      = "ENABLEBANKING_RESULT_URL"
 	EnvEnableBankingBaseURL        = "ENABLEBANKING_BASE_URL"
 	EnvEnableBankingTokenTTL       = "ENABLEBANKING_TOKEN_TTL"
 	EnvEnableBankingCountry        = "ENABLEBANKING_COUNTRY"
@@ -139,6 +140,7 @@ type EnableBankingConfig struct {
 	ApplicationID  string
 	PrivateKeyFile string
 	RedirectURL    string
+	ResultURL      string
 	BaseURL        string
 	TokenTTL       time.Duration
 	Country        string
@@ -354,6 +356,10 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 	}
 
 	cfg.EnableBanking.Enabled = lookupBool(lookup, EnvEnableBankingEnabled, cfg.EnableBanking.Enabled, add)
+	cfg.EnableBanking.ResultURL, _ = nonEmpty(lookup, EnvEnableBankingResultURL)
+	if cfg.EnableBanking.ResultURL != "" && !validEnableBankingResultURL(cfg.EnableBanking.ResultURL) {
+		add("%s must be an absolute HTTPS URL (HTTP is allowed only for loopback hosts) without a query or fragment", EnvEnableBankingResultURL)
+	}
 	if cfg.EnableBanking.Enabled {
 		encryptionKey, keySet := nonEmpty(lookup, EnvEnableBankingEncryptionKey)
 		if !keySet {
@@ -494,6 +500,20 @@ func validEnableBankingRedirectURL(value string) bool {
 		return false
 	}
 	return validURLHost(u.Host)
+}
+
+func validEnableBankingResultURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+		return false
+	}
+	if !validURLHost(u.Host) {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && isLoopbackHost(u.Hostname())
 }
 
 func validEnableBankingBaseURL(value string) bool {
