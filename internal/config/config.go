@@ -395,7 +395,7 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 		if cfg.EnableBanking.RedirectURL == "" {
 			add("%s is required", EnvEnableBankingRedirectURL)
 		} else if !validEnableBankingRedirectURL(cfg.EnableBanking.RedirectURL) {
-			add("%s must be an absolute HTTPS URL without a query or fragment", EnvEnableBankingRedirectURL)
+			add("%s must be an absolute HTTPS URL without a query or fragment (HTTP is allowed only for loopback hosts)", EnvEnableBankingRedirectURL)
 		}
 		if !validEnableBankingBaseURL(cfg.EnableBanking.BaseURL) {
 			add("%s must be an HTTPS origin (HTTP is allowed only for loopback hosts)", EnvEnableBankingBaseURL)
@@ -503,10 +503,16 @@ func validUUID(value string) bool {
 
 func validEnableBankingRedirectURL(value string) bool {
 	u, err := url.Parse(value)
-	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+	if err != nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
 		return false
 	}
-	return validURLHost(u.Host)
+	if !validURLHost(u.Host) {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && isLoopbackHost(u.Hostname())
 }
 
 func validEnableBankingResultURL(value string) bool {

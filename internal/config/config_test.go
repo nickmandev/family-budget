@@ -166,6 +166,41 @@ func TestLoadFromEnableBankingResultURL(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnableBankingRedirectURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		valid   bool
+		wantURL string
+	}{
+		{name: "https", value: "https://budget-api.nickmandev.com/callbacks/enablebanking", valid: true, wantURL: "https://budget-api.nickmandev.com/callbacks/enablebanking"},
+		{name: "localhost http", value: "http://localhost:8080/callbacks/enablebanking", valid: true, wantURL: "http://localhost:8080/callbacks/enablebanking"},
+		{name: "ipv4 loopback http", value: "http://127.0.0.1:8080/callbacks/enablebanking", valid: true, wantURL: "http://127.0.0.1:8080/callbacks/enablebanking"},
+		{name: "remote http", value: "http://budget.example/callbacks"},
+		{name: "query", value: "https://budget.example/callbacks?x=1"},
+		{name: "fragment", value: "https://budget.example/callbacks#frag"},
+		{name: "relative path", value: "/callbacks/enablebanking"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			setEnableBankingEnvironment(environment)
+			environment[EnvEnableBankingRedirectURL] = test.value
+			cfg, err := LoadFrom(lookupFrom(environment))
+			if test.valid {
+				if err != nil {
+					t.Fatalf("LoadFrom: %v", err)
+				}
+				if cfg.EnableBanking.RedirectURL != test.wantURL {
+					t.Errorf("RedirectURL = %q, want %q", cfg.EnableBanking.RedirectURL, test.wantURL)
+				}
+				return
+			}
+			assertEnableBankingErrorNames(t, err, EnvEnableBankingRedirectURL)
+		})
+	}
+}
+
 func TestLoadFromEnableBankingDefaults(t *testing.T) {
 	environment := validEnvironment()
 	environment[EnvEnableBankingEnabled] = "true"

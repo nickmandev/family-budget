@@ -140,7 +140,7 @@ For a localhost sandbox consent round-trip, see the
 | `ENABLEBANKING_ENABLED` | `false` | `api`, `worker` |
 | `ENABLEBANKING_APPLICATION_ID` | registered application UUID | `api`, `worker` |
 | `ENABLEBANKING_PRIVATE_KEY_FILE` | `/run/secrets/enablebanking.key` | `api`, `worker` |
-| `ENABLEBANKING_REDIRECT_URL` | `https://budget-api.nickmandev.com/callbacks/enablebanking` | `api`, `worker` |
+| `ENABLEBANKING_REDIRECT_URL` | `https://budget-api.nickmandev.com/callbacks/enablebanking` (loopback HTTP is allowed for local sandbox testing; production must use HTTPS) | `api`, `worker` |
 | `ENABLEBANKING_RESULT_URL` | `https://budget.nickmandev.com/bank/callback` | `api`, `worker` |
 | `ENABLEBANKING_BASE_URL` | `https://api.enablebanking.com` | `api`, `worker` |
 | `ENABLEBANKING_TOKEN_TTL` | `5m` | `api`, `worker` |
