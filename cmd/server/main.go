@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	// The runtime image is a minimal Alpine image without the tzdata package, so
 	// the IANA database must be embedded for time.LoadLocation to resolve household
@@ -25,6 +26,7 @@ import (
 	"family-budget/internal/application"
 	"family-budget/internal/auth"
 	"family-budget/internal/config"
+	"family-budget/internal/integrations/enablebanking"
 	"family-budget/internal/ports"
 	httpapi "family-budget/internal/transport/http"
 )
@@ -44,6 +46,7 @@ type database interface {
 type runDeps struct {
 	loadConfig   func() (config.Config, error)
 	openDatabase func(config.Config) (database, error)
+	readFile     func(string) ([]byte, error)
 	stderr       io.Writer
 }
 
@@ -65,7 +68,8 @@ func main() {
 				ConnMaxIdleTime: cfg.Database.ConnMaxIdleTime,
 			})
 		},
-		stderr: os.Stderr,
+		readFile: os.ReadFile,
+		stderr:   os.Stderr,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -82,6 +86,9 @@ func run(ctx context.Context, deps runDeps) error {
 	}
 	if deps.openDatabase == nil {
 		return fmt.Errorf("database opener is required")
+	}
+	if deps.readFile == nil {
+		return fmt.Errorf("file reader is required")
 	}
 	if deps.stderr == nil {
 		deps.stderr = io.Discard
@@ -111,9 +118,17 @@ func run(ctx context.Context, deps runDeps) error {
 		return fmt.Errorf("database %s is not reachable: %s", cfg.Database.Target(), cfg.Database.RedactError(err, dsn))
 	}
 
-	server, err := buildServer(cfg, db, logger)
+	server, err := buildServer(cfg, db, logger, deps.readFile)
 	if err != nil {
 		return err
+	}
+	if cfg.EnableBanking.Enabled {
+		logger.Info("enable banking integration enabled",
+			"country", cfg.EnableBanking.Country,
+			"redirect_url", cfg.EnableBanking.RedirectURL,
+		)
+	} else {
+		logger.Info("enable banking integration disabled")
 	}
 
 	logger.Info("starting api server",
@@ -129,7 +144,7 @@ func run(ctx context.Context, deps runDeps) error {
 
 // buildServer composes the auth, application and HTTP layers. It does not open
 // or migrate a database; the caller supplies an already-verified store.
-func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.Server, error) {
+func buildServer(cfg config.Config, db database, logger *slog.Logger, readFile func(string) ([]byte, error)) (*httpapi.Server, error) {
 	hasher, err := auth.NewHasher(auth.Argon2Params{
 		Time:       cfg.Auth.Argon2.Time,
 		MemoryKiB:  cfg.Auth.Argon2.MemoryKiB,
@@ -164,6 +179,40 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 		return nil, fmt.Errorf("configure application service: %w", err)
 	}
 
+	var bankService httpapi.BankUseCases
+	if cfg.EnableBanking.Enabled {
+		privateKeyPEM, err := readFile(cfg.EnableBanking.PrivateKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read Enable Banking private key %q", cfg.EnableBanking.PrivateKeyFile)
+		}
+		client, err := enablebanking.NewClient(enablebanking.Config{
+			ApplicationID: cfg.EnableBanking.ApplicationID,
+			PrivateKeyPEM: privateKeyPEM,
+			BaseURL:       cfg.EnableBanking.BaseURL,
+			TokenTTL:      cfg.EnableBanking.TokenTTL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configure Enable Banking client: %w", err)
+		}
+		box, err := application.NewSecretBox(cfg.EnableBanking.EncryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("configure Enable Banking secret box: %w", err)
+		}
+		bankService, err = application.NewBankService(application.BankDependencies{
+			UnitOfWork:  db,
+			Clock:       postgres.SystemClock{},
+			IDs:         postgres.UUIDGenerator{},
+			Provider:    client,
+			RedirectURL: cfg.EnableBanking.RedirectURL,
+			Country:     cfg.EnableBanking.Country,
+			StateTTL:    10 * time.Minute,
+			SecretBox:   box,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configure Enable Banking service: %w", err)
+		}
+	}
+
 	server, err := httpapi.NewServer(httpapi.Dependencies{
 		Config:    cfg,
 		Logger:    logger,
@@ -171,6 +220,7 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 		Readiness: db.Ping,
 		Auth:      authService,
 		App:       appService,
+		Bank:      bankService,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure http server: %w", err)
