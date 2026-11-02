@@ -29,8 +29,9 @@ A running container is not enough; these signals must reach a human:
 |--------|-----|-------------------------------------|
 | Low disk space | PostgreSQL and WAL stop accepting writes | Daily systemd timer checks `df` and pings only when free space drops below 15% (or on error); include `df -i` if inode pressure is a risk. |
 | Host memory pressure | OOM killer / swap thrash affects every project on the shared box | Daily (or 5-minute) timer checks `free`/`vmstat` and alerts when available memory is below 15% or the host is swapping steadily. |
-| Container OOM kill | A service restarts without an obvious application error | Check `docker inspect` for `OOMKilled`/exit 137 and `docker stats`; alert on unexpected restarts of `db`/`api`. |
+| Container OOM kill | A service restarts without an obvious application error | Check `docker inspect` for `OOMKilled`/exit 137 and `docker stats`; alert on unexpected restarts of `db`/`api`/`worker`. |
 | Service health | API/DB outage or restart loop | External HTTP check on `https://budget-api.<domain>/readyz` every 5 minutes. |
+| Sync worker / bank connections | Background synchronization stops or repeatedly fails | Check worker health and `worker_heartbeats`; alert on a missing/stale tick or repeated `last_error_at`. |
 | Owner-managed backup monitoring | Backup health is not handled in this repository | The owner's existing host-level backup infrastructure reports success, failure and freshness. |
 
 **Selected default:** [healthchecks.io](https://healthchecks.io/) free tier
@@ -53,6 +54,33 @@ Example cron entry (adjust the ping UUID and path):
 The healthcheck period and grace are configured on the provider, not in this
 repository. Logs contain the summary line and errors only; no passwords, keys or
 financial payloads.
+
+For the optional Enable Banking worker, inspect its health/restart state and
+application log, then compare the durable heartbeat with its configured sync
+interval:
+
+```sh
+docker compose ps worker
+docker compose logs --since=1h worker
+docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select worker_name, last_tick_at, last_error_at, last_error_summary from worker_heartbeats;"
+```
+
+With Enable Banking disabled, scheduled heartbeats are not written. When it is
+enabled, a missing heartbeat or a tick stale beyond the configured interval
+means the worker is not running or cannot finish passes. A recent heartbeat with a
+`last_error_at` points to a provider or synchronization failure. Keep the
+provider's callback and rate-limit handling distinct from worker liveness:
+
+- **HTTP 429 / rate limiting:** do not manually restart into a tight retry loop.
+  Check the persisted worker error and provider status, respect any
+  `Retry-After` guidance, and allow the bounded retry/backoff policy to recover.
+- **Expired provider session:** an expired/revoked consent session requires the
+  owner to reauthorize the bank connection; repeated background retries cannot
+  restore consent.
+- **Callback failure:** inspect API logs and the provider callback configuration,
+  then verify Cloudflare is not presenting a WAF/bot challenge on
+  `budget-api.nickmandev.com/callbacks/*`. Do not log or forward callback codes,
+  state values, or provider error details to users.
 
 ### Host-level checks for the shared box
 

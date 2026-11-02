@@ -152,6 +152,26 @@ successful preflight grants API access.
 preflight handling and disabled configuration. Deployment static guards assert
 that the environment variable is wired to the API and documented.
 
+## Enable Banking AIS integration (resolved by owner, 2026-11-02)
+
+**Rule.** The integration is AIS-only and uses server-side signed requests.
+Connections are owner-only for now; member connections follow later. The
+household currency is EUR; non-EUR imports are parked for review. Bulgaria and
+Fibank are the first supported market/bank. Pending imports may be confirmed
+only with explicit disclosure and must reconcile against the booked version;
+amount deltas greater than EUR 2 always require asking the user. Synchronization
+runs in a separate worker process. Provider session IDs are encrypted at rest
+with AES-256-GCM, and callback state is single-use and stored hashed.
+
+**Rationale.** Near-real-time spending capture is useful only if it does not
+weaken accounting truthfulness or turn provider data into an automatic ledger
+fact. Separating the worker makes background failures observable without hiding
+them in API request handling.
+
+**Test impact.** Provider/session/state tests belong in application and
+transport suites; static deployment guards cover the worker image, network,
+healthcheck and secret mounting. Phase-2 matching tests remain outstanding.
+
 ## Still open (not resolved by this document)
 
 No decision has been made yet on the following. They should not block domain work, but each needs a documented proposal with trade-offs before it is finalized:

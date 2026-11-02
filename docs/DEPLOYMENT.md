@@ -7,18 +7,20 @@ Production deployment of the family-budget API. The decisions come from
 
 ```
 internet ──> Cloudflare (proxied DNS, edge TLS, bot protection)
-                  │  Full (strict)
-                  ▼
-          nginx :80/:443 (host, Let's Encrypt)
-                  │
-                  └─ 127.0.0.1:8080 ──> api :8080 ──> db :5432 (PostgreSQL)
-                                             │              │
-                                             └── migrate ───┘ (one-shot goose up)
+                   │  Full (strict)
+                   ▼
+           nginx :80/:443 (host, Let's Encrypt)
+                   │
+                   └─ 127.0.0.1:8080 ──> api :8080 ────> db :5432 (PostgreSQL)
+                                          worker ────────┘
+                                              │
+                                          migrate (one-shot goose up)
 ```
 
 | Service   | Image                        | Network(s)        | Host ports | Restart         |
 |-----------|------------------------------|-------------------|------------|-----------------|
 | `api`     | `family-budget/api:${APP_VERSION}`    | `backend`, `frontend` | `127.0.0.1:8080` (loopback only) | `unless-stopped`|
+| `worker`  | same API image               | `backend` (internal) | none    | `unless-stopped`|
 | `migrate` | `family-budget/migrate:${APP_VERSION}`| `backend`         | none       | one-shot (`"no"`)|
 | `db`      | `postgres:18.6`              | `backend` (internal) | none    | `unless-stopped`|
 
@@ -26,6 +28,9 @@ internet ──> Cloudflare (proxied DNS, edge TLS, bot protection)
   to it, publishes no host port, and has no outbound route.
 - `frontend` is a non-internal network used only by `api` so the loopback port
   publish is reliable; it carries no other service.
+- `worker` uses the API image with `/worker` as its entrypoint. It has no host
+  port and is attached only to `backend`; its health endpoint is not exposed
+  publicly.
 - The host's existing nginx is the sole public listener (80/443) and proxies to
   the API's loopback binding. Cloudflare is the only public entry point in front
   of it; no proxy runs inside the Compose stack.
@@ -41,12 +46,13 @@ current pins were chosen from the stable releases available at authoring time:
 | Pin | Why |
 |-----|-----|
 | `golang:1.25.14-bookworm` | Builder only; same Go minor as the module (`go 1.25.6`). |
-| `alpine:3.24.3` | Minimal runtime; provides CA certificates and busybox `wget` for the API health probe. |
+| `alpine:3.24.3` | Minimal runtime; provides CA certificates and busybox `wget` for the API and worker health probes. |
 | `postgres:18.6` | Current PostgreSQL 18 stable minor (PLATFORM_DECISIONS §D requires 18.x with an explicit pin). |
 | goose `v3.27.3` | Built from source in the Dockerfile (last release compatible with Go 1.25). |
 
 `family-budget/api:<version>` and `family-budget/migrate:<version>` are local
-application release tags built from this repository, not upstream images.
+application release tags built from this repository, not upstream images. The
+worker shares the API image and selects `/worker` as its entrypoint.
 `APP_VERSION` selects the matching pair; it defaults to `1.0.0` for existing
 installations and is updated by the release deployment workflow.
 
@@ -113,12 +119,92 @@ same variable names to the services that consume them.
 
 | Variable | Example | Consumed by |
 |----------|---------|-------------|
-| `POSTGRES_HOST` | `db` (the compose service name) | `api`, `migrate` |
-| `POSTGRES_PORT` | `5432` | `api`, `migrate` |
-| `POSTGRES_USER` | `family_budget` | `db`, `api`, `migrate` |
-| `POSTGRES_PASSWORD` | long random value | `db`, `api`, `migrate` |
-| `POSTGRES_DB` | `family_budget` | `db`, `api`, `migrate` |
-| `POSTGRES_SSLMODE` | `disable` on the private network | `api`, `migrate` |
+| `POSTGRES_HOST` | `db` (the compose service name) | `api`, `migrate`, `worker` |
+| `POSTGRES_PORT` | `5432` | `api`, `migrate`, `worker` |
+| `POSTGRES_USER` | `family_budget` | `db`, `api`, `migrate`, `worker` |
+| `POSTGRES_PASSWORD` | long random value | `db`, `api`, `migrate`, `worker` |
+| `POSTGRES_DB` | `family_budget` | `db`, `api`, `migrate`, `worker` |
+| `POSTGRES_SSLMODE` | `disable` on the private network | `api`, `migrate`, `worker` |
+
+### Enable Banking (optional)
+
+Enable Banking is disabled by default. The API owns consent and callbacks; the
+separate worker is the background synchronization process. In phase 1 it
+reports health and heartbeats; bank reads are a later phase. Both run with the
+same provider configuration and read-only private-key directory mount.
+
+| Variable | Example / default | Consumed by |
+|----------|-------------------|-------------|
+| `ENABLEBANKING_ENABLED` | `false` | `api`, `worker` |
+| `ENABLEBANKING_APPLICATION_ID` | registered application UUID | `api`, `worker` |
+| `ENABLEBANKING_PRIVATE_KEY_FILE` | `/run/secrets/enablebanking.key` | `api`, `worker` |
+| `ENABLEBANKING_REDIRECT_URL` | `https://budget-api.nickmandev.com/callbacks/enablebanking` | `api`, `worker` |
+| `ENABLEBANKING_RESULT_URL` | `https://budget.nickmandev.com/bank/callback` | `api`, `worker` |
+| `ENABLEBANKING_BASE_URL` | `https://api.enablebanking.com` | `api`, `worker` |
+| `ENABLEBANKING_TOKEN_TTL` | `5m` | `api`, `worker` |
+| `ENABLEBANKING_COUNTRY` | `BG` | `api`, `worker` |
+| `ENABLEBANKING_SYNC_INTERVAL` | `6h` | `api`, `worker` |
+| `ENABLEBANKING_ENCRYPTION_KEY` | base64-encoded 32-byte key | `api`, `worker` |
+| `SYNCWORKER_PORT` | `8081` | `worker` |
+
+#### Key and provider provisioning
+
+1. Generate an RSA private key and a certificate for provider registration:
+
+   ```sh
+   mkdir -p secrets
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+       -out secrets/enablebanking.key
+   openssl req -new -x509 -key secrets/enablebanking.key \
+       -out secrets/enablebanking.crt -days 3650 -subj "/CN=family-budget"
+   chmod 600 secrets/enablebanking.key
+   ```
+
+2. Register the Enable Banking application and its certificate with the
+   provider. Configure the exact callback URL
+   `https://budget-api.nickmandev.com/callbacks/enablebanking` and the browser
+   result page `https://budget.nickmandev.com/bank/callback` in `.env` as
+   `ENABLEBANKING_REDIRECT_URL` and `ENABLEBANKING_RESULT_URL`, respectively.
+3. Keep `secrets/enablebanking.key` on the deployment host only. Compose mounts
+   the directory read-only at `/run/secrets`; set
+   `ENABLEBANKING_PRIVATE_KEY_FILE=/run/secrets/enablebanking.key`. The private
+   key must never be committed to git, included in a Docker build context/image,
+   or copied into `.env`. `.gitignore` and `.dockerignore` exclude the secrets
+   directory.
+4. Generate the provider-session encryption key with
+   `openssl rand -base64 32`, then place the output in the protected `.env` as
+   `ENABLEBANKING_ENCRYPTION_KEY`. Do not commit the key or share it with the
+   provider. Keep a secure backup for restoration of encrypted sessions.
+5. Set `ENABLEBANKING_ENABLED=true` and fill in the registered application ID
+   and callback configuration. Compose defaults for the API health port and
+   worker interval/country are documented above; restart both long-running
+   services after changing provider configuration.
+
+#### Cloudflare callback exception
+
+Enable Banking returns the user's browser to the API callback. Add a Cloudflare
+skip/bypass rule for `budget-api.nickmandev.com/callbacks/*` so WAF, bot-fight
+mode, or other interactive challenges do not intercept the consent return.
+Add an exception to **Always Use HTTPS** for this path only if a redirect would
+interfere with the provider's registered callback flow; keep the registered
+callback HTTPS and do not weaken edge TLS globally. A Cloudflare challenge page
+at the callback breaks consent completion.
+
+#### Worker operations
+
+Inspect synchronization logs and the persisted heartbeat:
+
+```sh
+docker compose logs worker
+docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select worker_name, last_tick_at, last_error_at, last_error_summary from worker_heartbeats;"
+```
+
+Run the query with `POSTGRES_USER` and `POSTGRES_DB` available in the shell.
+When Enable Banking is disabled, no scheduled synchronization heartbeat is
+written. When enabled, a missing heartbeat, or a `last_tick_at` older than the configured
+`ENABLEBANKING_SYNC_INTERVAL` plus expected runtime, means the worker is not
+running or is not completing its scheduled pass. A populated error summary
+signals that the worker is alive but its latest pass failed.
 
 ### HTTP and frontend configuration
 
@@ -222,8 +308,9 @@ ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
    ```
 
    `migrate` runs again as a one-shot service (Goose `up` is idempotent), then
-   `api` starts only after it exits successfully and its `/readyz` healthcheck
-   passes. nginx proxies to it on the loopback port.
+   `api` and `worker` start only after it exits successfully. The API's `/readyz`
+   healthcheck must pass; the worker has a private `/healthz` check. nginx proxies
+   to the API on the loopback port.
 
 7. Install the nginx front door and certificate for the subdomain, exactly as
    for the operator's other projects on this host:
@@ -264,9 +351,10 @@ ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
 - Logs: `docker compose logs -f api` (json-file driver, 10 MB × 3 files per
   service). Application logs are structured JSON with request IDs; secrets and
   request bodies are not logged.
-- Restart: `docker compose restart api` or `docker compose up -d` after a new
-  image has been shipped with `scripts/ship-image.sh`. The API receives SIGTERM
-  and shuts down gracefully within `HTTP_SHUTDOWN_TIMEOUT` (default 10s).
+- Restart: `docker compose restart api worker` or `docker compose up -d` after a
+  new image has been shipped with `scripts/ship-image.sh`. The API and worker
+  receive SIGTERM and shut down gracefully within `HTTP_SHUTDOWN_TIMEOUT`
+  (default 10s).
 - Front door: hostname/certificate changes are `sudo nginx -t &&
   sudo systemctl reload nginx`. Certificate issuance and renewal stay in the
   host's existing certbot flow; the Compose stack does not manage TLS.
@@ -275,7 +363,7 @@ ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
   and review the migration first.
 - Secret rotation: change `POSTGRES_PASSWORD` (and any other `POSTGRES_*`
   component if the database moved), then recreate the affected services
-  (`docker compose up -d --force-recreate db api migrate`). The connection URL
+  (`docker compose up -d --force-recreate db api migrate worker`). The connection URL
   is rebuilt internally from the components. Rotating the PostgreSQL role
   password inside a running database is a planned operational step; do not
   assume editing `.env` changes it.
@@ -416,10 +504,11 @@ observing real load (see [What to monitor](#what-to-monitor)).
 |---------|-----------|--------------|-----|
 | `db` | 0.75 | 768 MiB | 128 MiB `shared_buffers`, up to 3 autovacuum workers with 64 MiB `maintenance_work_mem`, 25 backends and WAL/OS overhead fit under 768 MiB. |
 | `api` | 0.75 | 256 MiB | Static Go binary (~20 MiB), bounded request buffers and one 64 MiB Argon2id hash. `GOMEMLIMIT=192MiB` makes the Go GC collect before the container limit. |
+| `worker` | 0.25 | 128 MiB | Background sync and a small health server; `GOMEMLIMIT=96MiB` stays below the container ceiling. |
 | `migrate` | 0.25 | 256 MiB | One-shot Goose run; transient only, exits before `api` starts. |
 
-At full tilt the Compose services can consume at most **1.75 vCPU** and
-**1.25 GiB** of RAM, leaving the rest of a 4 vCPU / 8 GB box for nginx, Calibre,
+At full tilt the Compose services can consume at most **2.0 vCPU** and
+**1.375 GiB** of RAM, leaving the rest of a 4 vCPU / 8 GB box for nginx, Calibre,
 the OS page cache and other projects. In practice they are nowhere near those
 ceilings:
 
@@ -428,6 +517,8 @@ ceilings:
   autovacuum or a checkpoint.
 - `api`: roughly **25–80 MiB RSS** at idle to light load, with a transient
   ~64 MiB bump per concurrent Argon2id login.
+- `worker`: low tens of MiB at rest; provider traffic and response processing
+  should remain bounded by its 128 MiB ceiling.
 - `migrate`: **0 MiB** at rest; ~20–50 MiB while applying migrations.
 - Whole stack at rest: **≈300–550 MiB**, usually under 1 GiB.
 
@@ -471,7 +562,7 @@ limit comfortably below `max_connections`; see the connection budget in
 
 - **Host memory and swap** (`free -h`, `vmstat 1`): available memory should stay
   well above ~15%; sustained swap-in/out means the host is overcommitted.
-- **Container memory** (`docker stats --no-stream`): watch `db` and `api` against
+- **Container memory** (`docker stats --no-stream`): watch `db`, `api` and `worker` against
   their limits. `docker inspect` shows `OOMKilled` and the configured limit.
 - **Disk** (`df -h`, `df -i`): PostgreSQL WAL, the `pgdata` volume, Docker
   images/logs and other host data all share the VPS disk.
@@ -490,13 +581,15 @@ raising limits on a box that has no memory to spare.
 - Only the host nginx listens publicly (80/443). The API is published on
   `127.0.0.1:8080` (loopback) so only the host nginx can reach it; PostgreSQL's
   5432 is reachable only from the internal `backend` network.
-- Containers run as non-root: the API and migrate images use numeric UID
+- Containers run as non-root: the API, worker and migrate images use numeric UID
   10001. `migrate` needs no writable filesystem.
-- Secrets live only in the git-ignored `.env` (mode 600) and never in the
-  Compose file, image layers or build context (`.dockerignore` excludes
-  `.env*`). `db`, `api` and `migrate` receive the database components they need;
-  the `api` and `migrate` binaries construct the connection URL internally. No
-  proxy container receives database credentials.
+- Secrets live only in the git-ignored `.env` (mode 600) or the excluded host
+  `secrets/` directory and never in the Compose file, image layers or build
+  context (`.dockerignore` excludes `.env*` and `secrets`). The API and worker
+  receive the private key directory read-only. `db`, `api`, `migrate` and
+  `worker` receive the database components they need; application binaries
+  construct the connection URL internally. No proxy container receives
+  database credentials.
 - Cloudflare is the only public entry point. Its origin firewall allows `:80`
   and `:443` only from the published Cloudflare ranges, which is also what makes
   `CF-Connecting-IP` (and therefore the restored real client IP used for rate
