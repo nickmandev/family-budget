@@ -36,6 +36,10 @@ type Dependencies struct {
 	// routes are not registered, so health/auth-only tests remain usable.
 	App *application.Service
 
+	// Bank is optional. When nil the bank routes and the provider callback are
+	// not registered, so deployments without Enable Banking still work.
+	Bank BankUseCases
+
 	// AuthRateLimiter overrides the limiter built from Config.Auth. It exists
 	// for tests and for deployments that share one limiter across servers.
 	AuthRateLimiter *RateLimiter
@@ -75,6 +79,7 @@ func NewServer(deps Dependencies) (*Server, error) {
 	server.registerTransactionRoutes(mux)
 	server.registerPlanRoutes(mux)
 	server.registerSuggestionRoutes(mux)
+	server.registerBankRoutes(mux)
 
 	// Catch-all so unknown paths use the API error envelope instead of
 	// net/http's plain-text 404.
