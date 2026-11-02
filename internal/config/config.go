@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,15 @@ const (
 	EnvSessionTTL      = "AUTH_SESSION_TTL"
 	EnvRateLimitMax    = "AUTH_RATE_LIMIT_MAX"
 	EnvRateLimitWindow = "AUTH_RATE_LIMIT_WINDOW"
+
+	EnvEnableBankingEnabled        = "ENABLEBANKING_ENABLED"
+	EnvEnableBankingApplicationID  = "ENABLEBANKING_APPLICATION_ID"
+	EnvEnableBankingPrivateKeyFile = "ENABLEBANKING_PRIVATE_KEY_FILE"
+	EnvEnableBankingRedirectURL    = "ENABLEBANKING_REDIRECT_URL"
+	EnvEnableBankingBaseURL        = "ENABLEBANKING_BASE_URL"
+	EnvEnableBankingTokenTTL       = "ENABLEBANKING_TOKEN_TTL"
+	EnvEnableBankingCountry        = "ENABLEBANKING_COUNTRY"
+	EnvEnableBankingSyncInterval   = "ENABLEBANKING_SYNC_INTERVAL"
 )
 
 // Config is the validated process configuration.
@@ -71,6 +81,7 @@ type Config struct {
 	Database               DatabaseConfig
 	HTTP                   HTTPConfig
 	Auth                   AuthConfig
+	EnableBanking          EnableBankingConfig
 	HTTPCORSAllowedOrigins []string
 }
 
@@ -116,6 +127,19 @@ type AuthConfig struct {
 	SessionTTL      time.Duration
 	RateLimitMax    int
 	RateLimitWindow time.Duration
+}
+
+// EnableBankingConfig holds the optional AIS provider configuration. The
+// private key remains in a mounted file; this package only stores its path.
+type EnableBankingConfig struct {
+	Enabled        bool
+	ApplicationID  string
+	PrivateKeyFile string
+	RedirectURL    string
+	BaseURL        string
+	TokenTTL       time.Duration
+	Country        string
+	SyncInterval   time.Duration
 }
 
 // Argon2Config holds the Argon2id cost parameters. They are configurable so a
@@ -175,6 +199,12 @@ func Default() Config {
 			SessionTTL:      30 * 24 * time.Hour,
 			RateLimitMax:    10,
 			RateLimitWindow: time.Minute,
+		},
+		EnableBanking: EnableBankingConfig{
+			BaseURL:      "https://api.enablebanking.com",
+			TokenTTL:     5 * time.Minute,
+			Country:      "BG",
+			SyncInterval: 6 * time.Hour,
 		},
 		HTTPCORSAllowedOrigins: []string{},
 	}
@@ -320,6 +350,43 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 		add("%s must be between 1s and 24h", EnvRateLimitWindow)
 	}
 
+	cfg.EnableBanking.Enabled = lookupBool(lookup, EnvEnableBankingEnabled, cfg.EnableBanking.Enabled, add)
+	if cfg.EnableBanking.Enabled {
+		cfg.EnableBanking.ApplicationID, _ = nonEmpty(lookup, EnvEnableBankingApplicationID)
+		cfg.EnableBanking.PrivateKeyFile, _ = nonEmpty(lookup, EnvEnableBankingPrivateKeyFile)
+		cfg.EnableBanking.RedirectURL, _ = nonEmpty(lookup, EnvEnableBankingRedirectURL)
+		cfg.EnableBanking.BaseURL = lookupString(lookup, EnvEnableBankingBaseURL, cfg.EnableBanking.BaseURL)
+		cfg.EnableBanking.TokenTTL = lookupDuration(lookup, EnvEnableBankingTokenTTL, cfg.EnableBanking.TokenTTL, add)
+		cfg.EnableBanking.Country = lookupString(lookup, EnvEnableBankingCountry, cfg.EnableBanking.Country)
+		cfg.EnableBanking.SyncInterval = lookupDuration(lookup, EnvEnableBankingSyncInterval, cfg.EnableBanking.SyncInterval, add)
+
+		if !validUUID(cfg.EnableBanking.ApplicationID) {
+			add("%s is required and must be a UUID", EnvEnableBankingApplicationID)
+		}
+		if cfg.EnableBanking.PrivateKeyFile == "" {
+			add("%s is required", EnvEnableBankingPrivateKeyFile)
+		} else if !filepath.IsAbs(cfg.EnableBanking.PrivateKeyFile) {
+			add("%s must be an absolute path", EnvEnableBankingPrivateKeyFile)
+		}
+		if cfg.EnableBanking.RedirectURL == "" {
+			add("%s is required", EnvEnableBankingRedirectURL)
+		} else if !validEnableBankingRedirectURL(cfg.EnableBanking.RedirectURL) {
+			add("%s must be an absolute HTTPS URL without a query or fragment", EnvEnableBankingRedirectURL)
+		}
+		if !validEnableBankingBaseURL(cfg.EnableBanking.BaseURL) {
+			add("%s must be an HTTPS origin (HTTP is allowed only for loopback hosts)", EnvEnableBankingBaseURL)
+		}
+		if cfg.EnableBanking.TokenTTL < time.Second || cfg.EnableBanking.TokenTTL > 24*time.Hour {
+			add("%s must be between 1s and 24h", EnvEnableBankingTokenTTL)
+		}
+		if len(cfg.EnableBanking.Country) != 2 || cfg.EnableBanking.Country[0] < 'A' || cfg.EnableBanking.Country[0] > 'Z' || cfg.EnableBanking.Country[1] < 'A' || cfg.EnableBanking.Country[1] > 'Z' {
+			add("%s must be a 2-letter uppercase country code", EnvEnableBankingCountry)
+		}
+		if cfg.EnableBanking.SyncInterval < time.Minute || cfg.EnableBanking.SyncInterval > 24*time.Hour {
+			add("%s must be between 1m and 24h", EnvEnableBankingSyncInterval)
+		}
+	}
+
 	if len(problems) > 0 {
 		return Config{}, errors.Join(problems...)
 	}
@@ -372,6 +439,83 @@ func lookupDuration(lookup LookupFunc, key string, fallback time.Duration, add f
 		return fallback
 	}
 	return value
+}
+
+func lookupBool(lookup LookupFunc, key string, fallback bool, add func(string, ...any)) bool {
+	raw, ok := nonEmpty(lookup, key)
+	if !ok {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		add("%s must be a boolean", key)
+		return fallback
+	}
+	return value
+}
+
+func lookupString(lookup LookupFunc, key, fallback string) string {
+	value, ok := nonEmpty(lookup, key)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for index, char := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func validEnableBankingRedirectURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+		return false
+	}
+	return validURLHost(u.Host)
+}
+
+func validEnableBankingBaseURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(value, "#") {
+		return false
+	}
+	if !validURLHost(u.Host) {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && isLoopbackHost(u.Hostname())
+}
+
+func validURLHost(host string) bool {
+	u := &url.URL{Host: host}
+	if u.Hostname() == "" {
+		return false
+	}
+	if _, _, err := originPort(host); err != nil {
+		return false
+	}
+	return net.ParseIP(u.Hostname()) != nil || validOriginHostname(u.Hostname())
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // lookupCSV parses a comma-separated list, trimming each entry. An unset or

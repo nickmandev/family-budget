@@ -58,6 +58,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Auth.RateLimitMax != defaults.Auth.RateLimitMax {
 		t.Errorf("rate limit max = %d, want %d", cfg.Auth.RateLimitMax, defaults.Auth.RateLimitMax)
 	}
+	if cfg.EnableBanking != defaults.EnableBanking {
+		t.Errorf("Enable Banking = %+v, want defaults %+v", cfg.EnableBanking, defaults.EnableBanking)
+	}
 	if len(cfg.HTTPCORSAllowedOrigins) != 0 {
 		t.Errorf("CORS allowed origins = %v, want disabled by default", cfg.HTTPCORSAllowedOrigins)
 	}
@@ -71,6 +74,148 @@ func TestLoadFromDefaults(t *testing.T) {
 	want.SSLMode = "disable"
 	if cfg.Database != want {
 		t.Errorf("database = %+v, want %+v", cfg.Database, want)
+	}
+}
+
+func TestLoadFromEnableBankingDisabledWithoutVariables(t *testing.T) {
+	config, err := LoadFrom(lookupFrom(validEnvironment()))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if config.EnableBanking.Enabled {
+		t.Fatal("Enable Banking is enabled without an explicit setting")
+	}
+}
+
+func TestLoadFromEnableBankingEnabled(t *testing.T) {
+	environment := validEnvironment()
+	setEnableBankingEnvironment(environment)
+
+	config, err := LoadFrom(lookupFrom(environment))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	want := EnableBankingConfig{
+		Enabled:        true,
+		ApplicationID:  "123e4567-e89b-12d3-a456-426614174000",
+		PrivateKeyFile: "/run/secrets/enablebanking-key.pem",
+		RedirectURL:    "https://budget-api.nickmandev.com/callbacks/enablebanking",
+		BaseURL:        "https://api.enablebanking.com",
+		TokenTTL:       5 * time.Minute,
+		Country:        "BG",
+		SyncInterval:   6 * time.Hour,
+	}
+	if config.EnableBanking != want {
+		t.Errorf("Enable Banking = %+v, want %+v", config.EnableBanking, want)
+	}
+}
+
+func TestLoadFromEnableBankingDefaults(t *testing.T) {
+	environment := validEnvironment()
+	environment[EnvEnableBankingEnabled] = "true"
+	environment[EnvEnableBankingApplicationID] = "123e4567-e89b-12d3-a456-426614174000"
+	environment[EnvEnableBankingPrivateKeyFile] = "/run/secrets/enablebanking-key.pem"
+	environment[EnvEnableBankingRedirectURL] = "https://budget-api.nickmandev.com/callbacks/enablebanking"
+
+	config, err := LoadFrom(lookupFrom(environment))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if config.EnableBanking.Country != "BG" || config.EnableBanking.SyncInterval != 6*time.Hour ||
+		config.EnableBanking.TokenTTL != 5*time.Minute || config.EnableBanking.BaseURL != "https://api.enablebanking.com" {
+		t.Errorf("Enable Banking defaults = %+v", config.EnableBanking)
+	}
+}
+
+func TestLoadFromEnableBankingRequiresValidConfigurationWhenEnabled(t *testing.T) {
+	missingTests := []struct {
+		name     string
+		variable string
+	}{
+		{name: "application ID", variable: EnvEnableBankingApplicationID},
+		{name: "private key file", variable: EnvEnableBankingPrivateKeyFile},
+		{name: "redirect URL", variable: EnvEnableBankingRedirectURL},
+	}
+	for _, test := range missingTests {
+		t.Run("missing "+test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			setEnableBankingEnvironment(environment)
+			delete(environment, test.variable)
+			_, err := LoadFrom(lookupFrom(environment))
+			assertEnableBankingErrorNames(t, err, test.variable)
+		})
+	}
+
+	invalidTests := []struct {
+		name     string
+		variable string
+		value    string
+	}{
+		{name: "application ID", variable: EnvEnableBankingApplicationID, value: "not-a-uuid"},
+		{name: "private key path", variable: EnvEnableBankingPrivateKeyFile, value: "relative/key.pem"},
+		{name: "redirect URL scheme", variable: EnvEnableBankingRedirectURL, value: "http://budget.example/callback"},
+		{name: "redirect URL query", variable: EnvEnableBankingRedirectURL, value: "https://budget.example/callback?state=secret"},
+		{name: "redirect URL fragment", variable: EnvEnableBankingRedirectURL, value: "https://budget.example/callback#fragment"},
+		{name: "base URL path", variable: EnvEnableBankingBaseURL, value: "https://api.enablebanking.com/v1"},
+		{name: "remote HTTP base URL", variable: EnvEnableBankingBaseURL, value: "http://api.enablebanking.com"},
+		{name: "country lowercase", variable: EnvEnableBankingCountry, value: "bg"},
+		{name: "country wrong length", variable: EnvEnableBankingCountry, value: "BGR"},
+		{name: "token TTL below range", variable: EnvEnableBankingTokenTTL, value: "500ms"},
+		{name: "token TTL above range", variable: EnvEnableBankingTokenTTL, value: "25h"},
+		{name: "token TTL invalid", variable: EnvEnableBankingTokenTTL, value: "soon"},
+		{name: "sync interval below range", variable: EnvEnableBankingSyncInterval, value: "30s"},
+		{name: "sync interval above range", variable: EnvEnableBankingSyncInterval, value: "25h"},
+		{name: "sync interval invalid", variable: EnvEnableBankingSyncInterval, value: "later"},
+	}
+	for _, test := range invalidTests {
+		t.Run("invalid "+test.name, func(t *testing.T) {
+			environment := validEnvironment()
+			setEnableBankingEnvironment(environment)
+			environment[test.variable] = test.value
+			_, err := LoadFrom(lookupFrom(environment))
+			assertEnableBankingErrorNames(t, err, test.variable)
+			if strings.Contains(err.Error(), test.value) {
+				t.Errorf("validation error included the configured value: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadFromEnableBankingAllowsLoopbackHTTPBaseURL(t *testing.T) {
+	environment := validEnvironment()
+	setEnableBankingEnvironment(environment)
+	environment[EnvEnableBankingBaseURL] = "http://127.0.0.1:8080"
+
+	if _, err := LoadFrom(lookupFrom(environment)); err != nil {
+		t.Fatalf("LoadFrom loopback base URL: %v", err)
+	}
+}
+
+func TestLoadFromEnableBankingSkipsFieldsWhenDisabled(t *testing.T) {
+	environment := validEnvironment()
+	environment[EnvEnableBankingApplicationID] = "invalid"
+	environment[EnvEnableBankingPrivateKeyFile] = "relative"
+	environment[EnvEnableBankingCountry] = "bad"
+
+	if _, err := LoadFrom(lookupFrom(environment)); err != nil {
+		t.Fatalf("LoadFrom with disabled, invalid Enable Banking fields: %v", err)
+	}
+}
+
+func setEnableBankingEnvironment(environment map[string]string) {
+	environment[EnvEnableBankingEnabled] = "true"
+	environment[EnvEnableBankingApplicationID] = "123e4567-e89b-12d3-a456-426614174000"
+	environment[EnvEnableBankingPrivateKeyFile] = "/run/secrets/enablebanking-key.pem"
+	environment[EnvEnableBankingRedirectURL] = "https://budget-api.nickmandev.com/callbacks/enablebanking"
+}
+
+func assertEnableBankingErrorNames(t *testing.T, err error, variable string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("LoadFrom accepted invalid Enable Banking setting %s", variable)
+	}
+	if !strings.Contains(err.Error(), variable) {
+		t.Errorf("error %q does not name %s", err, variable)
 	}
 }
 
