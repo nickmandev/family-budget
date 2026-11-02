@@ -199,6 +199,15 @@ type SessionRecord struct {
 	RevokedAt *time.Time
 }
 
+// WorkerHeartbeatRecord is operational liveness state for a background worker.
+type WorkerHeartbeatRecord struct {
+	WorkerName       string
+	StartedAt        time.Time
+	LastTickAt       time.Time
+	LastErrorAt      *time.Time
+	LastErrorSummary *string
+}
+
 // AccountRecord is the metadata needed for an account; balances are derived
 // from account_postings and reservations, never stored here.
 type AccountRecord struct {
@@ -285,6 +294,12 @@ type SessionRepository interface {
 	FindByTokenHash(ctx context.Context, tokenHash string) (SessionRecord, error)
 	Revoke(ctx context.Context, id string) error
 	RevokeAllForUser(ctx context.Context, user domain.UserId, now time.Time) error
+}
+
+// WorkerHeartbeatRepository stores operational worker liveness state.
+type WorkerHeartbeatRepository interface {
+	Upsert(ctx context.Context, record WorkerHeartbeatRecord) error
+	Get(ctx context.Context, workerName string) (WorkerHeartbeatRecord, error)
 }
 
 // MembershipRepository stores household membership and role state.
@@ -412,6 +427,7 @@ type Repositories struct {
 	BankConnections BankConnectionRepository
 	Users           UserRepository
 	Sessions        SessionRepository
+	Heartbeats      WorkerHeartbeatRepository
 	Memberships     MembershipRepository
 	Accounts        AccountRepository
 	Envelopes       EnvelopeRepository

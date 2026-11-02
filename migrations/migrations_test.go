@@ -268,12 +268,13 @@ func TestDownDropsEveryTable(t *testing.T) {
 
 // TestEveryHouseholdOwnedTableCarriesHouseholdID reinforces the isolation
 // decision in STACK_DECISIONS §3. households is the household itself; users is
-// the global authentication identity, and sessions is global authentication
-// state keyed by user, so none of them carries household_id.
+// the global authentication identity, sessions is global authentication state
+// keyed by user, and worker_heartbeats is operational telemetry, so none carries
+// household_id.
 func TestEveryHouseholdOwnedTableCarriesHouseholdID(t *testing.T) {
 	for _, file := range loadMigrations(t) {
 		for _, name := range tableNames(file.up) {
-			if name == "households" || name == "users" || name == "sessions" {
+			if name == "households" || name == "users" || name == "sessions" || name == "worker_heartbeats" {
 				continue
 			}
 			body := tableBody(file.up, name)

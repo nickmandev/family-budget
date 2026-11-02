@@ -115,6 +115,7 @@ func newRepositories(db *gorm.DB) ports.Repositories {
 		BankConnections: &bankConnectionRepository{db: db},
 		Users:           &userRepository{db: db},
 		Sessions:        &sessionRepository{db: db},
+		Heartbeats:      &workerHeartbeatRepository{db: db},
 		Memberships:     &membershipRepository{db: db},
 		Accounts:        &accountRepository{db: db},
 		Envelopes:       &envelopeRepository{db: db},
@@ -128,19 +129,20 @@ func newRepositories(db *gorm.DB) ports.Repositories {
 
 // Compile-time port conformance checks.
 var (
-	_ ports.UnitOfWork               = (*Store)(nil)
-	_ ports.HouseholdRepository      = (*householdRepository)(nil)
-	_ ports.BankConnectionRepository = (*bankConnectionRepository)(nil)
-	_ ports.UserRepository           = (*userRepository)(nil)
-	_ ports.SessionRepository        = (*sessionRepository)(nil)
-	_ ports.MembershipRepository     = (*membershipRepository)(nil)
-	_ ports.AccountRepository        = (*accountRepository)(nil)
-	_ ports.EnvelopeRepository       = (*envelopeRepository)(nil)
-	_ ports.JournalRepository        = (*journalRepository)(nil)
-	_ ports.ReservationRepository    = (*reservationRepository)(nil)
-	_ ports.PlanRepository           = (*planRepository)(nil)
-	_ ports.SuggestionRepository     = (*suggestionRepository)(nil)
-	_ ports.IdempotencyRepository    = (*idempotencyRepository)(nil)
+	_ ports.UnitOfWork                = (*Store)(nil)
+	_ ports.HouseholdRepository       = (*householdRepository)(nil)
+	_ ports.BankConnectionRepository  = (*bankConnectionRepository)(nil)
+	_ ports.UserRepository            = (*userRepository)(nil)
+	_ ports.SessionRepository         = (*sessionRepository)(nil)
+	_ ports.WorkerHeartbeatRepository = (*workerHeartbeatRepository)(nil)
+	_ ports.MembershipRepository      = (*membershipRepository)(nil)
+	_ ports.AccountRepository         = (*accountRepository)(nil)
+	_ ports.EnvelopeRepository        = (*envelopeRepository)(nil)
+	_ ports.JournalRepository         = (*journalRepository)(nil)
+	_ ports.ReservationRepository     = (*reservationRepository)(nil)
+	_ ports.PlanRepository            = (*planRepository)(nil)
+	_ ports.SuggestionRepository      = (*suggestionRepository)(nil)
+	_ ports.IdempotencyRepository     = (*idempotencyRepository)(nil)
 )
 
 // currencyForHousehold reads the owning household's currency. Plans,

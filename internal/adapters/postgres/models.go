@@ -52,6 +52,17 @@ type sessionModel struct {
 
 func (sessionModel) TableName() string { return "sessions" }
 
+// WorkerHeartbeatModel maps operational worker_heartbeats.
+type WorkerHeartbeatModel struct {
+	WorkerName       string     `gorm:"column:worker_name;primaryKey"`
+	StartedAt        time.Time  `gorm:"column:started_at"`
+	LastTickAt       time.Time  `gorm:"column:last_tick_at"`
+	LastErrorAt      *time.Time `gorm:"column:last_error_at"`
+	LastErrorSummary *string    `gorm:"column:last_error_summary"`
+}
+
+func (WorkerHeartbeatModel) TableName() string { return "worker_heartbeats" }
+
 // membershipModel maps household_memberships.
 type membershipModel struct {
 	HouseholdID pgtype.UUID `gorm:"column:household_id;primaryKey"`
