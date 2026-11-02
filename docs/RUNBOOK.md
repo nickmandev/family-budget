@@ -77,6 +77,9 @@ provider's callback and rate-limit handling distinct from worker liveness:
 - **Expired provider session:** an expired/revoked consent session requires the
   owner to reauthorize the bank connection; repeated background retries cannot
   restore consent.
+- **HTTP 401 / provider rejection:** first check that
+  `secrets/enablebanking.key` still matches the certificate registered for the
+  application ID, before reauthorizing.
 - **Callback failure:** inspect API logs and the provider callback configuration,
   then verify Cloudflare is not presenting a WAF/bot challenge on
   `budget-api.nickmandev.com/callbacks/*`. Do not log or forward callback codes,

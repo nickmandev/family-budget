@@ -149,32 +149,58 @@ same provider configuration and read-only private-key directory mount.
 
 #### Key and provider provisioning
 
-1. Generate an RSA private key and a certificate for provider registration:
+1. Obtain the provider private key using the path that matches how the
+   application was registered:
+
+   - **Registered with a browser-generated key (recommended, and how this
+     deployment was registered):** use the private key exported at registration
+     time and place it at `secrets/enablebanking.key`. Do not run any key-
+     generation command. The key must match the certificate registered for the
+     application ID; regenerating a key for an existing application invalidates
+     signed JWTs.
+   - **Registered by uploading your own certificate:** generate the pair locally
+     and register the certificate with the provider:
+
+     ```sh
+     mkdir -p secrets
+     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+         -out secrets/enablebanking.key
+     openssl req -new -x509 -key secrets/enablebanking.key \
+         -out secrets/enablebanking.crt -days 3650 -subj "/CN=family-budget"
+     ```
+
+   In either case, `secrets/enablebanking.key` must be an **unencrypted** PEM
+   containing a PKCS#1 or PKCS#8 RSA key of at least 2048 bits. If the exported
+   file is passphrase-protected, decrypt it once and restrict its permissions:
 
    ```sh
-   mkdir -p secrets
-   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-       -out secrets/enablebanking.key
-   openssl req -new -x509 -key secrets/enablebanking.key \
-       -out secrets/enablebanking.crt -days 3650 -subj "/CN=family-budget"
+   openssl rsa -in exported-private-key.pem -out secrets/enablebanking.key
    chmod 600 secrets/enablebanking.key
    ```
+
+   For an already unencrypted key, set its permissions with
+   `chmod 600 secrets/enablebanking.key` as well.
 
 2. Register the Enable Banking application and its certificate with the
    provider. Configure the exact callback URL
    `https://budget-api.nickmandev.com/callbacks/enablebanking` and the browser
    result page `https://budget.nickmandev.com/bank/callback` in `.env` as
    `ENABLEBANKING_REDIRECT_URL` and `ENABLEBANKING_RESULT_URL`, respectively.
-3. Keep `secrets/enablebanking.key` on the deployment host only. Compose mounts
+3. Keep `secrets/enablebanking.key` on the deployment host only. Never
+   regenerate or rotate this key without re-registering its certificate with
+   the provider. Compose mounts
    the directory read-only at `/run/secrets`; set
    `ENABLEBANKING_PRIVATE_KEY_FILE=/run/secrets/enablebanking.key`. The private
    key must never be committed to git, included in a Docker build context/image,
    or copied into `.env`. `.gitignore` and `.dockerignore` exclude the secrets
    directory.
-4. Generate the provider-session encryption key with
+4. Generate **our** provider-session encryption key locally with
    `openssl rand -base64 32`, then place the output in the protected `.env` as
-   `ENABLEBANKING_ENCRYPTION_KEY`. Do not commit the key or share it with the
-   provider. Keep a secure backup for restoration of encrypted sessions.
+   `ENABLEBANKING_ENCRYPTION_KEY`. It is used only to encrypt provider session
+   IDs at rest in `bank_connections.session_id_encrypted`; it is not issued by
+   or shared with Enable Banking. Do not commit the key. Keep a secure backup:
+   losing it makes stored sessions unreadable, so the connections must be
+   reauthorized.
 5. Set `ENABLEBANKING_ENABLED=true` and fill in the registered application ID
    and callback configuration. Compose defaults for the API health port and
    worker interval/country are documented above; restart both long-running
