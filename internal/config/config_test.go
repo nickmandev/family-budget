@@ -48,6 +48,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.HTTP.Port != defaults.HTTP.Port {
 		t.Errorf("port = %d, want %d", cfg.HTTP.Port, defaults.HTTP.Port)
 	}
+	if cfg.SyncWorkerPort != 8081 {
+		t.Errorf("sync worker port = %d, want 8081", cfg.SyncWorkerPort)
+	}
 	if cfg.HTTP.MaxBodyBytes != defaults.HTTP.MaxBodyBytes {
 		t.Errorf("max body = %d, want %d", cfg.HTTP.MaxBodyBytes, defaults.HTTP.MaxBodyBytes)
 	}
@@ -411,6 +414,9 @@ func TestLoadFromRejectsInvalidEnvironment(t *testing.T) {
 		{name: "port zero for api", variable: EnvPort, value: "0"},
 		{name: "port too high for api", variable: EnvPort, value: "70000"},
 		{name: "port not a number for api", variable: EnvPort, value: "http"},
+		{name: "sync worker port zero", variable: EnvSyncWorkerPort, value: "0"},
+		{name: "sync worker port too high", variable: EnvSyncWorkerPort, value: "70000"},
+		{name: "sync worker port not a number", variable: EnvSyncWorkerPort, value: "http"},
 		{name: "body too small", variable: EnvHTTPMaxBodyBytes, value: "10"},
 		{name: "body not a number", variable: EnvHTTPMaxBodyBytes, value: "big"},
 		{name: "request timeout not a duration", variable: EnvHTTPRequestTimeout, value: "soon"},

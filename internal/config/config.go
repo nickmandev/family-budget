@@ -41,7 +41,8 @@ const (
 	EnvDatabaseConnMaxLifetime = "DATABASE_CONN_MAX_LIFETIME"
 	EnvDatabaseConnMaxIdleTime = "DATABASE_CONN_MAX_IDLE_TIME"
 
-	EnvPort = "PORT"
+	EnvPort           = "PORT"
+	EnvSyncWorkerPort = "SYNCWORKER_PORT"
 
 	EnvHTTPReadHeaderTimeout  = "HTTP_READ_HEADER_TIMEOUT"
 	EnvHTTPReadTimeout        = "HTTP_READ_TIMEOUT"
@@ -83,6 +84,7 @@ const (
 type Config struct {
 	Database               DatabaseConfig
 	HTTP                   HTTPConfig
+	SyncWorkerPort         int
 	Auth                   AuthConfig
 	EnableBanking          EnableBankingConfig
 	HTTPCORSAllowedOrigins []string
@@ -193,6 +195,7 @@ func Default() Config {
 			// by default.
 			TrustedProxies: []string{"127.0.0.0/8", "::1/128"},
 		},
+		SyncWorkerPort: 8081,
 		Auth: AuthConfig{
 			Argon2: Argon2Config{
 				Time:       3,
@@ -275,6 +278,10 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 	cfg.HTTP.Port = lookupInt(lookup, EnvPort, cfg.HTTP.Port, add)
 	if cfg.HTTP.Port < 1 || cfg.HTTP.Port > 65535 {
 		add("%s must be between 1 and 65535", EnvPort)
+	}
+	cfg.SyncWorkerPort = lookupInt(lookup, EnvSyncWorkerPort, cfg.SyncWorkerPort, add)
+	if cfg.SyncWorkerPort < 1 || cfg.SyncWorkerPort > 65535 {
+		add("%s must be between 1 and 65535", EnvSyncWorkerPort)
 	}
 
 	cfg.HTTP.ReadHeaderTimeout = lookupDuration(lookup, EnvHTTPReadHeaderTimeout, cfg.HTTP.ReadHeaderTimeout, add)
