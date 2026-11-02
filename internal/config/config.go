@@ -9,6 +9,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -74,6 +75,7 @@ const (
 	EnvEnableBankingTokenTTL       = "ENABLEBANKING_TOKEN_TTL"
 	EnvEnableBankingCountry        = "ENABLEBANKING_COUNTRY"
 	EnvEnableBankingSyncInterval   = "ENABLEBANKING_SYNC_INTERVAL"
+	EnvEnableBankingEncryptionKey  = "ENABLEBANKING_ENCRYPTION_KEY"
 )
 
 // Config is the validated process configuration.
@@ -133,6 +135,7 @@ type AuthConfig struct {
 // private key remains in a mounted file; this package only stores its path.
 type EnableBankingConfig struct {
 	Enabled        bool
+	EncryptionKey  []byte
 	ApplicationID  string
 	PrivateKeyFile string
 	RedirectURL    string
@@ -352,6 +355,14 @@ func LoadFrom(lookup LookupFunc) (Config, error) {
 
 	cfg.EnableBanking.Enabled = lookupBool(lookup, EnvEnableBankingEnabled, cfg.EnableBanking.Enabled, add)
 	if cfg.EnableBanking.Enabled {
+		encryptionKey, keySet := nonEmpty(lookup, EnvEnableBankingEncryptionKey)
+		if !keySet {
+			add("%s is required", EnvEnableBankingEncryptionKey)
+		} else if decoded, err := base64.StdEncoding.DecodeString(encryptionKey); err != nil || len(decoded) != 32 {
+			add("%s must be base64-encoded 32-byte key material", EnvEnableBankingEncryptionKey)
+		} else {
+			cfg.EnableBanking.EncryptionKey = decoded
+		}
 		cfg.EnableBanking.ApplicationID, _ = nonEmpty(lookup, EnvEnableBankingApplicationID)
 		cfg.EnableBanking.PrivateKeyFile, _ = nonEmpty(lookup, EnvEnableBankingPrivateKeyFile)
 		cfg.EnableBanking.RedirectURL, _ = nonEmpty(lookup, EnvEnableBankingRedirectURL)

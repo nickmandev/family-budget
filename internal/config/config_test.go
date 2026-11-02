@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -58,7 +60,15 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Auth.RateLimitMax != defaults.Auth.RateLimitMax {
 		t.Errorf("rate limit max = %d, want %d", cfg.Auth.RateLimitMax, defaults.Auth.RateLimitMax)
 	}
-	if cfg.EnableBanking != defaults.EnableBanking {
+	if cfg.EnableBanking.Enabled != defaults.EnableBanking.Enabled ||
+		!bytes.Equal(cfg.EnableBanking.EncryptionKey, defaults.EnableBanking.EncryptionKey) ||
+		cfg.EnableBanking.ApplicationID != defaults.EnableBanking.ApplicationID ||
+		cfg.EnableBanking.PrivateKeyFile != defaults.EnableBanking.PrivateKeyFile ||
+		cfg.EnableBanking.RedirectURL != defaults.EnableBanking.RedirectURL ||
+		cfg.EnableBanking.BaseURL != defaults.EnableBanking.BaseURL ||
+		cfg.EnableBanking.TokenTTL != defaults.EnableBanking.TokenTTL ||
+		cfg.EnableBanking.Country != defaults.EnableBanking.Country ||
+		cfg.EnableBanking.SyncInterval != defaults.EnableBanking.SyncInterval {
 		t.Errorf("Enable Banking = %+v, want defaults %+v", cfg.EnableBanking, defaults.EnableBanking)
 	}
 	if len(cfg.HTTPCORSAllowedOrigins) != 0 {
@@ -97,6 +107,7 @@ func TestLoadFromEnableBankingEnabled(t *testing.T) {
 	}
 	want := EnableBankingConfig{
 		Enabled:        true,
+		EncryptionKey:  make([]byte, 32),
 		ApplicationID:  "123e4567-e89b-12d3-a456-426614174000",
 		PrivateKeyFile: "/run/secrets/enablebanking-key.pem",
 		RedirectURL:    "https://budget-api.nickmandev.com/callbacks/enablebanking",
@@ -105,7 +116,11 @@ func TestLoadFromEnableBankingEnabled(t *testing.T) {
 		Country:        "BG",
 		SyncInterval:   6 * time.Hour,
 	}
-	if config.EnableBanking != want {
+	if config.EnableBanking.Enabled != want.Enabled || !bytes.Equal(config.EnableBanking.EncryptionKey, want.EncryptionKey) ||
+		config.EnableBanking.ApplicationID != want.ApplicationID || config.EnableBanking.PrivateKeyFile != want.PrivateKeyFile ||
+		config.EnableBanking.RedirectURL != want.RedirectURL || config.EnableBanking.BaseURL != want.BaseURL ||
+		config.EnableBanking.TokenTTL != want.TokenTTL || config.EnableBanking.Country != want.Country ||
+		config.EnableBanking.SyncInterval != want.SyncInterval {
 		t.Errorf("Enable Banking = %+v, want %+v", config.EnableBanking, want)
 	}
 }
@@ -113,6 +128,7 @@ func TestLoadFromEnableBankingEnabled(t *testing.T) {
 func TestLoadFromEnableBankingDefaults(t *testing.T) {
 	environment := validEnvironment()
 	environment[EnvEnableBankingEnabled] = "true"
+	environment[EnvEnableBankingEncryptionKey] = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	environment[EnvEnableBankingApplicationID] = "123e4567-e89b-12d3-a456-426614174000"
 	environment[EnvEnableBankingPrivateKeyFile] = "/run/secrets/enablebanking-key.pem"
 	environment[EnvEnableBankingRedirectURL] = "https://budget-api.nickmandev.com/callbacks/enablebanking"
@@ -135,6 +151,7 @@ func TestLoadFromEnableBankingRequiresValidConfigurationWhenEnabled(t *testing.T
 		{name: "application ID", variable: EnvEnableBankingApplicationID},
 		{name: "private key file", variable: EnvEnableBankingPrivateKeyFile},
 		{name: "redirect URL", variable: EnvEnableBankingRedirectURL},
+		{name: "encryption key", variable: EnvEnableBankingEncryptionKey},
 	}
 	for _, test := range missingTests {
 		t.Run("missing "+test.name, func(t *testing.T) {
@@ -166,6 +183,8 @@ func TestLoadFromEnableBankingRequiresValidConfigurationWhenEnabled(t *testing.T
 		{name: "sync interval below range", variable: EnvEnableBankingSyncInterval, value: "30s"},
 		{name: "sync interval above range", variable: EnvEnableBankingSyncInterval, value: "25h"},
 		{name: "sync interval invalid", variable: EnvEnableBankingSyncInterval, value: "later"},
+		{name: "encryption key malformed", variable: EnvEnableBankingEncryptionKey, value: "not-base64"},
+		{name: "encryption key wrong length", variable: EnvEnableBankingEncryptionKey, value: base64.StdEncoding.EncodeToString([]byte("too-short"))},
 	}
 	for _, test := range invalidTests {
 		t.Run("invalid "+test.name, func(t *testing.T) {
@@ -204,6 +223,7 @@ func TestLoadFromEnableBankingSkipsFieldsWhenDisabled(t *testing.T) {
 
 func setEnableBankingEnvironment(environment map[string]string) {
 	environment[EnvEnableBankingEnabled] = "true"
+	environment[EnvEnableBankingEncryptionKey] = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	environment[EnvEnableBankingApplicationID] = "123e4567-e89b-12d3-a456-426614174000"
 	environment[EnvEnableBankingPrivateKeyFile] = "/run/secrets/enablebanking-key.pem"
 	environment[EnvEnableBankingRedirectURL] = "https://budget-api.nickmandev.com/callbacks/enablebanking"
