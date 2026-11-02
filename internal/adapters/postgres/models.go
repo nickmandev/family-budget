@@ -64,6 +64,27 @@ type membershipModel struct {
 
 func (membershipModel) TableName() string { return "household_memberships" }
 
+// BankConnectionModel maps bank_connections.
+type BankConnectionModel struct {
+	ID                  pgtype.UUID `gorm:"column:id;primaryKey"`
+	HouseholdID         pgtype.UUID `gorm:"column:household_id"`
+	ASPSPName           string      `gorm:"column:aspsp_name"`
+	ASPSPCountry        string      `gorm:"column:aspsp_country"`
+	Status              string      `gorm:"column:status"`
+	StateHash           string      `gorm:"column:state_hash"`
+	StateExpiresAt      time.Time   `gorm:"column:state_expires_at"`
+	InitiatedBy         pgtype.UUID `gorm:"column:initiated_by"`
+	AuthorizationID     *string     `gorm:"column:authorization_id"`
+	ProviderRedirectURL *string     `gorm:"column:provider_redirect_url"`
+	SessionIDEncrypted  *string     `gorm:"column:session_id_encrypted;type:text"`
+	SessionExpiresAt    *time.Time  `gorm:"column:session_expires_at"`
+	FailureSummary      *string     `gorm:"column:failure_summary"`
+	CreatedAt           time.Time   `gorm:"column:created_at"`
+	UpdatedAt           time.Time   `gorm:"column:updated_at"`
+}
+
+func (BankConnectionModel) TableName() string { return "bank_connections" }
+
 // accountModel maps accounts.
 type accountModel struct {
 	ID             pgtype.UUID `gorm:"column:id;primaryKey"`
