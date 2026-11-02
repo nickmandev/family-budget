@@ -132,6 +132,8 @@ Enable Banking is disabled by default. The API owns consent and callbacks; the
 separate worker is the background synchronization process. In phase 1 it
 reports health and heartbeats; bank reads are a later phase. Both run with the
 same provider configuration and read-only private-key directory mount.
+For a localhost sandbox consent round-trip, see the
+[Enable Banking local testing runbook](ENABLEBANKING_LOCAL_TESTING.md).
 
 | Variable | Example / default | Consumed by |
 |----------|-------------------|-------------|
