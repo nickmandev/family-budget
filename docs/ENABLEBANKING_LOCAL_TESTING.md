@@ -76,8 +76,13 @@ heartbeat is checked below.
    The script prints the connection ID and provider `redirect_url`, but never
    prints the API session token.
 
-3. Open the printed redirect URL in a browser and complete the Fibank sandbox
-   SCA flow. On success, the browser should return to
+3. Open the printed redirect URL in a browser and complete the sandbox SCA flow
+   for the ASPSP you selected (for example **Mock ASPSP** or Genome). The set of
+   sandbox ASPSPs is curated by Enable Banking and changes over time; Fibank and
+   other live banks may only appear for a production application. The Mock ASPSP
+   is the most deterministic option: configure its mock accounts/transactions
+   in the Enable Banking Control Panel first, then the consent screen returns to
+   this API's callback like any other ASPSP. On success, the browser should return to
    `http://localhost:4200/bank/callback?status=completed`.
 
    The frontend branch `feat/enablebanking-fe-phase1` (owned by another agent)
@@ -87,6 +92,8 @@ heartbeat is checked below.
    the frontend.
 
 ## Verify the result
+
+This exact flow has been verified locally end to end with Mock ASPSP (connection reaches `AUTHORIZED`).
 
 Check the connection status and worker heartbeat:
 
