@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"family-budget/internal/integrations/enablebanking"
 	"family-budget/internal/ports"
 )
+
+// Enable Banking adjusts the requested validity to the ASPSP maximum.
+const consentValidity = 90 * 24 * time.Hour
 
 // BankProvider is the narrow provider seam; tests supply a fake.
 type BankProvider interface {
@@ -110,7 +114,7 @@ func (s *BankService) ListASPSPs(ctx context.Context, actor domain.UserId, house
 	}
 	aspsps, err := s.provider.ListASPSPs(ctx, s.country)
 	if err != nil {
-		return nil, errors.New("application: unable to list available banks")
+		return nil, fmt.Errorf("application: list available banks: %w", err)
 	}
 	return aspsps, nil
 }
@@ -134,7 +138,7 @@ func (s *BankService) StartConnection(ctx context.Context, actor domain.UserId, 
 	}
 	aspsps, err := s.provider.ListASPSPs(ctx, country)
 	if err != nil {
-		return StartConnectionResult{}, errors.New("application: unable to validate selected bank")
+		return StartConnectionResult{}, fmt.Errorf("application: validate selected bank: %w", err)
 	}
 	var canonicalName string
 	for _, aspsp := range aspsps {
@@ -183,10 +187,13 @@ func (s *BankService) StartConnection(ctx context.Context, actor domain.UserId, 
 		return StartConnectionResult{}, err
 	}
 
+	validUntil := now.Add(consentValidity)
 	response, providerErr := s.provider.StartAuthorization(ctx, enablebanking.StartAuthorizationRequest{
+		Access:      &enablebanking.Access{ValidUntil: &validUntil},
 		ASPSP:       enablebanking.ASPSPRef{Name: canonicalName, Country: country},
 		State:       state,
 		RedirectURL: s.redirect,
+		PSUType:     "personal",
 	})
 	if providerErr != nil {
 		record.Status = ports.BankConnectionFailed
@@ -195,7 +202,7 @@ func (s *BankService) StartConnection(ctx context.Context, actor domain.UserId, 
 		if err := s.saveConnectionAsOwner(ctx, actor, household, record); err != nil {
 			return StartConnectionResult{}, err
 		}
-		return StartConnectionResult{}, errors.New("application: bank authorization could not be started")
+		return StartConnectionResult{}, fmt.Errorf("application: start bank authorization: %w", providerErr)
 	}
 	record.AuthorizationID = stringPointer(response.AuthorizationID)
 	record.ProviderRedirectURL = stringPointer(response.URL)
@@ -306,6 +313,9 @@ func (s *BankService) HandleCallback(ctx context.Context, code, state, providerE
 		record, err = s.failConnection(ctx, record, "Bank session authorization failed")
 		if err != nil {
 			return CallbackResult{}, err
+		}
+		if providerErr != nil {
+			return CallbackResult{}, fmt.Errorf("application: authorize bank session: %w", providerErr)
 		}
 		return CallbackResult{Outcome: CallbackFailed, Connection: record}, nil
 	}
