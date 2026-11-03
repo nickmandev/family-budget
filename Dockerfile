@@ -28,7 +28,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
     && CGO_ENABLED=0 GOOS=linux go build \
-        -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate
+        -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate \
+    && CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath -ldflags="-s -w" -o /out/worker ./cmd/syncworker
 
 # --- migrate: one-shot schema runner (compose service `migrate`) -----------
 # Goose is a pinned module dependency (go.mod), not a floating binary/image.
@@ -62,6 +64,7 @@ RUN apk add --no-cache ca-certificates tzdata \
     && adduser -S -u 10001 -G app -H app
 
 COPY --from=builder /out/server /server
+COPY --from=builder /out/worker /worker
 
 USER 10001:10001
 EXPOSE 8080

@@ -141,6 +141,36 @@ type MembershipRecord struct {
 	RemovedAt *time.Time
 }
 
+// BankConnectionStatus is the lifecycle state of a bank connection attempt.
+type BankConnectionStatus string
+
+const (
+	BankConnectionPending      BankConnectionStatus = "PENDING"
+	BankConnectionAuthorized   BankConnectionStatus = "AUTHORIZED"
+	BankConnectionFailed       BankConnectionStatus = "FAILED"
+	BankConnectionExpired      BankConnectionStatus = "EXPIRED"
+	BankConnectionDisconnected BankConnectionStatus = "DISCONNECTED"
+)
+
+// BankConnectionRecord is the persistence-neutral bank connection shape.
+type BankConnectionRecord struct {
+	ID                  string
+	HouseholdID         domain.HouseholdId
+	ASPSPName           string
+	ASPSPCountry        string
+	Status              BankConnectionStatus
+	StateHash           string
+	StateExpiresAt      time.Time
+	InitiatedBy         domain.UserId
+	AuthorizationID     *string
+	ProviderRedirectURL *string
+	SessionIDEncrypted  *string
+	SessionExpiresAt    *time.Time
+	FailureSummary      *string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 // UserMembershipRecord is a membership projected from the user's side. The
 // authenticated-user endpoint (/api/v1/auth/me) needs every household a user
 // belongs to, so unlike MembershipRecord it carries the household id. It is a
@@ -167,6 +197,15 @@ type SessionRecord struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	RevokedAt *time.Time
+}
+
+// WorkerHeartbeatRecord is operational liveness state for a background worker.
+type WorkerHeartbeatRecord struct {
+	WorkerName       string
+	StartedAt        time.Time
+	LastTickAt       time.Time
+	LastErrorAt      *time.Time
+	LastErrorSummary *string
 }
 
 // AccountRecord is the metadata needed for an account; balances are derived
@@ -257,6 +296,12 @@ type SessionRepository interface {
 	RevokeAllForUser(ctx context.Context, user domain.UserId, now time.Time) error
 }
 
+// WorkerHeartbeatRepository stores operational worker liveness state.
+type WorkerHeartbeatRepository interface {
+	Upsert(ctx context.Context, record WorkerHeartbeatRecord) error
+	Get(ctx context.Context, workerName string) (WorkerHeartbeatRecord, error)
+}
+
 // MembershipRepository stores household membership and role state.
 //
 // ListForUser is the user-scoped projection used by /auth/me. Like every other
@@ -268,6 +313,21 @@ type MembershipRepository interface {
 	List(ctx context.Context, household domain.HouseholdId) ([]MembershipRecord, error)
 	ListForUser(ctx context.Context, user domain.UserId) ([]UserMembershipRecord, error)
 	Save(ctx context.Context, household domain.HouseholdId, membership MembershipRecord) error
+}
+
+// BankConnectionRepository is household-scoped except for ClaimPendingState,
+// which is keyed by the state hash because the provider callback carries no
+// household identity.
+type BankConnectionRepository interface {
+	Create(ctx context.Context, household domain.HouseholdId, record BankConnectionRecord) error
+	Get(ctx context.Context, household domain.HouseholdId, id string) (BankConnectionRecord, error)
+	ListByHousehold(ctx context.Context, household domain.HouseholdId) ([]BankConnectionRecord, error)
+	// ClaimPendingState atomically consumes a pending attempt by state hash:
+	// it transitions PENDING -> AUTHORIZED (session still NULL) exactly once and
+	// returns the record. Replay, expiry or wrong status returns
+	// ENTITY_NOT_FOUND_OR_NOT_IN_HOUSEHOLD.
+	ClaimPendingState(ctx context.Context, stateHash string, now time.Time) (BankConnectionRecord, error)
+	Save(ctx context.Context, record BankConnectionRecord) error
 }
 
 // AccountRepository stores account metadata. Archiving an account with active
@@ -363,17 +423,19 @@ type IdempotencyRepository interface {
 // these over one transaction handle; no repository value may be used after the
 // transaction callback returns.
 type Repositories struct {
-	Households   HouseholdRepository
-	Users        UserRepository
-	Sessions     SessionRepository
-	Memberships  MembershipRepository
-	Accounts     AccountRepository
-	Envelopes    EnvelopeRepository
-	Journal      JournalRepository
-	Reservations ReservationRepository
-	Plans        PlanRepository
-	Suggestions  SuggestionRepository
-	Idempotency  IdempotencyRepository
+	Households      HouseholdRepository
+	BankConnections BankConnectionRepository
+	Users           UserRepository
+	Sessions        SessionRepository
+	Heartbeats      WorkerHeartbeatRepository
+	Memberships     MembershipRepository
+	Accounts        AccountRepository
+	Envelopes       EnvelopeRepository
+	Journal         JournalRepository
+	Reservations    ReservationRepository
+	Plans           PlanRepository
+	Suggestions     SuggestionRepository
+	Idempotency     IdempotencyRepository
 }
 
 // UnitOfWork is the atomicity boundary (DOMAIN_MODEL §2). One command is one

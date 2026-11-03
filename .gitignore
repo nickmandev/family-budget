@@ -11,6 +11,9 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
+secrets/*
+!secrets/.gitkeep
 
 # Editor and OS noise
 .idea/

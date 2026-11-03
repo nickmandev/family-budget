@@ -9,6 +9,7 @@
 .env
 .env.*
 !.env.example
+secrets
 
 # Developer and test noise.
 .idea

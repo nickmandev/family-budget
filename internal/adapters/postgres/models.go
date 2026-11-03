@@ -52,6 +52,17 @@ type sessionModel struct {
 
 func (sessionModel) TableName() string { return "sessions" }
 
+// WorkerHeartbeatModel maps operational worker_heartbeats.
+type WorkerHeartbeatModel struct {
+	WorkerName       string     `gorm:"column:worker_name;primaryKey"`
+	StartedAt        time.Time  `gorm:"column:started_at"`
+	LastTickAt       time.Time  `gorm:"column:last_tick_at"`
+	LastErrorAt      *time.Time `gorm:"column:last_error_at"`
+	LastErrorSummary *string    `gorm:"column:last_error_summary"`
+}
+
+func (WorkerHeartbeatModel) TableName() string { return "worker_heartbeats" }
+
 // membershipModel maps household_memberships.
 type membershipModel struct {
 	HouseholdID pgtype.UUID `gorm:"column:household_id;primaryKey"`
@@ -63,6 +74,27 @@ type membershipModel struct {
 }
 
 func (membershipModel) TableName() string { return "household_memberships" }
+
+// BankConnectionModel maps bank_connections.
+type BankConnectionModel struct {
+	ID                  pgtype.UUID `gorm:"column:id;primaryKey"`
+	HouseholdID         pgtype.UUID `gorm:"column:household_id"`
+	ASPSPName           string      `gorm:"column:aspsp_name"`
+	ASPSPCountry        string      `gorm:"column:aspsp_country"`
+	Status              string      `gorm:"column:status"`
+	StateHash           string      `gorm:"column:state_hash"`
+	StateExpiresAt      time.Time   `gorm:"column:state_expires_at"`
+	InitiatedBy         pgtype.UUID `gorm:"column:initiated_by"`
+	AuthorizationID     *string     `gorm:"column:authorization_id"`
+	ProviderRedirectURL *string     `gorm:"column:provider_redirect_url"`
+	SessionIDEncrypted  *string     `gorm:"column:session_id_encrypted;type:text"`
+	SessionExpiresAt    *time.Time  `gorm:"column:session_expires_at"`
+	FailureSummary      *string     `gorm:"column:failure_summary"`
+	CreatedAt           time.Time   `gorm:"column:created_at"`
+	UpdatedAt           time.Time   `gorm:"column:updated_at"`
+}
+
+func (BankConnectionModel) TableName() string { return "bank_connections" }
 
 // accountModel maps accounts.
 type accountModel struct {
