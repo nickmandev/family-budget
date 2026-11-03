@@ -23,11 +23,13 @@ directory and create the local environment file:
 ```sh
 mkdir -p secrets
 cp /path/to/exported-private-key.pem secrets/enablebanking.key
-chmod 600 secrets/enablebanking.key
+chmod 644 secrets/enablebanking.key
 openssl rand -base64 32
 cp .env.local.example .env.local
 chmod 600 .env.local
 ```
+
+The container runs as UID 10001; a `0600` key owned by your host user is unreadable.
 
 Edit `.env.local` and fill in the sandbox application UUID in
 `ENABLEBANKING_APPLICATION_ID` and the output of `openssl rand -base64 32` in
@@ -116,6 +118,15 @@ an unrelated, non-sensitive value. An Enable Banking provider HTTP 401 usually
 means the private key does not match the certificate registered for the
 application. A callback 404 usually means the running API image does not include
 the callback route; rebuild/use an image containing this backend branch.
+
+## Troubleshooting
+
+- Repeated `read Enable Banking private key` log lines indicate a permission or
+  missing-file problem. Verify that the key is readable by the container user:
+
+  ```sh
+  docker run --rm --user 10001:10001 -v "$PWD/secrets:/run/secrets:ro" alpine:3.24.3 head -1 /run/secrets/enablebanking.key
+  ```
 
 ## Cleanup
 
