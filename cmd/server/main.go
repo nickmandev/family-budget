@@ -183,7 +183,7 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger, readFile f
 	if cfg.EnableBanking.Enabled {
 		privateKeyPEM, err := readFile(cfg.EnableBanking.PrivateKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("read Enable Banking private key %q", cfg.EnableBanking.PrivateKeyFile)
+			return nil, fmt.Errorf("read Enable Banking private key %q: %w", cfg.EnableBanking.PrivateKeyFile, err)
 		}
 		client, err := enablebanking.NewClient(enablebanking.Config{
 			ApplicationID: cfg.EnableBanking.ApplicationID,
