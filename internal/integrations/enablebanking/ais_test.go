@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newAISClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
@@ -40,7 +41,7 @@ func TestListASPSPs(t *testing.T) {
 				t.Errorf("Authorization header = %q, want Bearer token", authorization)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"name":"Bank A","country":"BG","psu_types":["personal"],"unknown":"ignored"},{"name":"Bank B","country":"BG"}]`))
+			_, _ = w.Write([]byte(`{"aspsps":[{"name":"Bank A","country":"BG","psu_types":["personal"],"unknown":"ignored"},{"name":"Bank B","country":"BG"}]}`))
 		}))
 
 		aspsps, err := client.ListASPSPs(context.Background(), "bg")
@@ -54,7 +55,7 @@ func TestListASPSPs(t *testing.T) {
 
 	t.Run("empty list is non-nil", func(t *testing.T) {
 		client, _ := newAISClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`{"aspsps":[]}`))
 		}))
 		aspsps, err := client.ListASPSPs(context.Background(), "BG")
 		if err != nil {
@@ -64,9 +65,21 @@ func TestListASPSPs(t *testing.T) {
 			t.Fatalf("ASPSPs = %#v, want non-nil empty slice", aspsps)
 		}
 	})
+
+	for _, response := range []string{`[]`, `{"unexpected":[]}`} {
+		t.Run("rejects malformed response "+response, func(t *testing.T) {
+			client, _ := newAISClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(response))
+			}))
+			if _, err := client.ListASPSPs(context.Background(), "BG"); err == nil {
+				t.Fatalf("ListASPSPs accepted response %s", response)
+			}
+		})
+	}
 }
 
 func TestStartAuthorization(t *testing.T) {
+	validUntil := time.Date(2027, time.January, 2, 3, 4, 5, 0, time.UTC)
 	client, _ := newAISClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/auth" {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
@@ -75,8 +88,8 @@ func TestStartAuthorization(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
-		if len(body) != 3 {
-			t.Errorf("body fields = %v, want only aspsp, state and redirect_url", body)
+		if len(body) != 5 {
+			t.Errorf("body fields = %v, want aspsp, state, redirect_url, access and psu_type", body)
 		}
 		var aspsp map[string]string
 		if err := json.Unmarshal(body["aspsp"], &aspsp); err != nil {
@@ -91,16 +104,27 @@ func TestStartAuthorization(t *testing.T) {
 		if state != "single-use-state" || redirectURL != "https://app.example/callback?source=bank" {
 			t.Errorf("state = %q, redirect_url = %q", state, redirectURL)
 		}
-		if _, exists := body["access"]; exists {
-			t.Errorf("body unexpectedly contains access: %s", body["access"])
+		var access map[string]json.RawMessage
+		if err := json.Unmarshal(body["access"], &access); err != nil {
+			t.Errorf("decode access: %v", err)
+		}
+		var gotValidUntil time.Time
+		if err := json.Unmarshal(access["valid_until"], &gotValidUntil); err != nil || !gotValidUntil.Equal(validUntil) {
+			t.Errorf("access.valid_until = %s (err %v), want %s", gotValidUntil, err, validUntil)
+		}
+		var psuType string
+		if err := json.Unmarshal(body["psu_type"], &psuType); err != nil || psuType != "personal" {
+			t.Errorf("psu_type = %q (err %v), want personal", psuType, err)
 		}
 		_, _ = w.Write([]byte(`{"url":"https://bank.example/authorize","authorization_id":"authorization-123","psu_id_hash":"hash"}`))
 	}))
 
 	response, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{
+		Access:      &Access{ValidUntil: &validUntil},
 		ASPSP:       ASPSPRef{Name: "Example Bank", Country: "BG"},
 		State:       "single-use-state",
 		RedirectURL: "https://app.example/callback?source=bank",
+		PSUType:     "personal",
 	})
 	if err != nil {
 		t.Fatalf("StartAuthorization: %v", err)
@@ -114,12 +138,28 @@ func TestStartAuthorization(t *testing.T) {
 			_, _ = w.Write([]byte(`{"authorization_id":"authorization-123"}`))
 		}))
 		_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{
+			Access:      &Access{ValidUntil: &validUntil},
+			ASPSP:       ASPSPRef{Name: "Example Bank", Country: "BG"},
+			State:       "single-use-state",
+			RedirectURL: "https://app.example/callback",
+			PSUType:     "personal",
+		})
+		if err == nil {
+			t.Fatal("StartAuthorization succeeded without URL")
+		}
+	})
+
+	t.Run("requires access valid_until", func(t *testing.T) {
+		client, _ := newAISClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("request reached provider without required access scope")
+		}))
+		_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{
 			ASPSP:       ASPSPRef{Name: "Example Bank", Country: "BG"},
 			State:       "single-use-state",
 			RedirectURL: "https://app.example/callback",
 		})
-		if err == nil {
-			t.Fatal("StartAuthorization succeeded without URL")
+		if err == nil || !strings.Contains(err.Error(), "access scope with valid_until is required") {
+			t.Fatalf("StartAuthorization error = %v, want required access scope validation", err)
 		}
 	})
 }
@@ -200,6 +240,8 @@ func TestAISHTTPErrorDoesNotExposeResponseBody(t *testing.T) {
 
 func TestAISValidation(t *testing.T) {
 	var calls atomic.Int32
+	validUntil := time.Date(2027, time.January, 2, 3, 4, 5, 0, time.UTC)
+	access := &Access{ValidUntil: &validUntil}
 	client, _ := newAISClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		_, _ = w.Write([]byte(`{"url":"https://bank.example/authorize","session_id":"session"}`))
@@ -210,27 +252,27 @@ func TestAISValidation(t *testing.T) {
 	}{
 		{name: "bad list country", call: func() error { _, err := client.ListASPSPs(context.Background(), "B1"); return err }},
 		{name: "bad authorization country", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "Bank", Country: "B"}, State: "state", RedirectURL: "https://app.example/callback"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "Bank", Country: "B"}, State: "state", RedirectURL: "https://app.example/callback"})
 			return err
 		}},
 		{name: "blank ASPSP name", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "  ", Country: "BG"}, State: "state", RedirectURL: "https://app.example/callback"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "  ", Country: "BG"}, State: "state", RedirectURL: "https://app.example/callback"})
 			return err
 		}},
 		{name: "blank state", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: " \t", RedirectURL: "https://app.example/callback"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: " \t", RedirectURL: "https://app.example/callback"})
 			return err
 		}},
 		{name: "relative redirect URL", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "/callback"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "/callback"})
 			return err
 		}},
 		{name: "insecure redirect URL", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "http://app.example/callback"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "http://app.example/callback"})
 			return err
 		}},
 		{name: "redirect URL fragment", call: func() error {
-			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "https://app.example/callback#fragment"})
+			_, err := client.StartAuthorization(context.Background(), StartAuthorizationRequest{Access: access, ASPSP: ASPSPRef{Name: "Bank", Country: "BG"}, State: "state", RedirectURL: "https://app.example/callback#fragment"})
 			return err
 		}},
 		{name: "blank authorization code", call: func() error { _, err := client.AuthorizeSession(context.Background(), " \t"); return err }},

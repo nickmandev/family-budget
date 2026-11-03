@@ -116,6 +116,8 @@ an unrelated, non-sensitive value. An Enable Banking provider HTTP 401 usually
 means the private key does not match the certificate registered for the
 application. A callback 404 usually means the running API image does not include
 the callback route; rebuild/use an image containing this backend branch.
+A 500 on the bank page with `INTERNAL_ERROR` means an upstream provider call
+failed; check the `bank request failed` log line for the cause.
 
 ## Cleanup
 

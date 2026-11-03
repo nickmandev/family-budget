@@ -72,6 +72,7 @@ func (s *Server) handleListBankASPSPs(w http.ResponseWriter, r *http.Request) {
 	}
 	aspsps, err := s.deps.Bank.ListASPSPs(r.Context(), userID, household)
 	if err != nil {
+		s.logBankFailure(r, err)
 		writeError(w, r, err)
 		return
 	}
@@ -95,6 +96,7 @@ func (s *Server) handleStartBankConnection(w http.ResponseWriter, r *http.Reques
 	}
 	result, err := s.deps.Bank.StartConnection(r.Context(), userID, household, request.ASPSPName, request.ASPSPCountry)
 	if err != nil {
+		s.logBankFailure(r, err)
 		writeError(w, r, err)
 		return
 	}
@@ -112,6 +114,7 @@ func (s *Server) handleListBankConnections(w http.ResponseWriter, r *http.Reques
 	}
 	records, err := s.deps.Bank.ListConnections(r.Context(), userID, household)
 	if err != nil {
+		s.logBankFailure(r, err)
 		writeError(w, r, err)
 		return
 	}
@@ -135,6 +138,7 @@ func (s *Server) handleDisconnectBankConnection(w http.ResponseWriter, r *http.R
 	}
 	record, err := s.deps.Bank.Disconnect(r.Context(), userID, household, connectionID)
 	if err != nil {
+		s.logBankFailure(r, err)
 		writeError(w, r, err)
 		return
 	}
@@ -146,6 +150,7 @@ func (s *Server) handleEnableBankingCallback(w http.ResponseWriter, r *http.Requ
 	query := r.URL.Query()
 	result, err := s.deps.Bank.HandleCallback(r.Context(), query.Get("code"), query.Get("state"), query.Get("error"), query.Get("error_description"))
 	if err != nil {
+		s.logBankFailure(r, err)
 		writeError(w, r, err)
 		return
 	}
@@ -167,6 +172,16 @@ func (s *Server) handleEnableBankingCallback(w http.ResponseWriter, r *http.Requ
 	}]{Data: struct {
 		Outcome string `json:"outcome"`
 	}{Outcome: outcome}})
+}
+
+func (s *Server) logBankFailure(r *http.Request, err error) {
+	if mapped := toAPIError(err); mapped != nil && mapped.Status >= http.StatusInternalServerError &&
+		s.deps.Logger != nil {
+		s.deps.Logger.Error("bank request failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"error", err,
+		)
+	}
 }
 
 func bankRequestScope(r *http.Request) (domain.UserId, domain.HouseholdId, error) {

@@ -244,6 +244,14 @@ func TestStartConnectionPersistsBeforeProviderCallAndReturnsHashedState(t *testi
 		request.ASPSP.Name != "Example Bank" || request.ASPSP.Country != "BG" {
 		t.Fatalf("provider request = %+v", request)
 	}
+	wantValidUntil := f.clock.now.Add(90 * 24 * time.Hour)
+	if request.Access == nil || request.Access.ValidUntil == nil ||
+		request.Access.ValidUntil.Sub(wantValidUntil) > time.Second || request.Access.ValidUntil.Sub(wantValidUntil) < -time.Second {
+		t.Fatalf("provider access valid_until = %+v, want approximately %s", request.Access, wantValidUntil)
+	}
+	if request.PSUType != "personal" {
+		t.Fatalf("provider PSU type = %q, want personal", request.PSUType)
+	}
 	if got := f.uow.connections[result.Connection.ID]; got.Status != ports.BankConnectionPending {
 		t.Fatalf("persisted status before start provider call = %s", got.Status)
 	}
@@ -270,10 +278,11 @@ func TestStartConnectionAuthorizationValidationAndProviderFailure(t *testing.T) 
 	})
 	t.Run("provider failure", func(t *testing.T) {
 		f := newBankTestFixture(t)
-		f.provider.startErr = errors.New("provider response contains private body")
+		providerErr := errors.New("provider response contains private body")
+		f.provider.startErr = providerErr
 		_, err := f.service.StartConnection(context.Background(), testOwnerID, testHousehold, "Example Bank", "BG")
-		if err == nil || strings.Contains(err.Error(), "private body") {
-			t.Fatalf("provider failure error = %v", err)
+		if err == nil || !errors.Is(err, providerErr) || !strings.Contains(err.Error(), "private body") {
+			t.Fatalf("provider failure error = %v, want wrapped provider cause", err)
 		}
 		if len(f.uow.connections) != 1 {
 			t.Fatalf("persisted rows = %d, want failed attempt", len(f.uow.connections))
@@ -342,10 +351,11 @@ func TestHandleCallbackProviderDenialAndExchangeFailure(t *testing.T) {
 	t.Run("exchange failure is generic", func(t *testing.T) {
 		f := newBankTestFixture(t)
 		started := f.start(t)
-		f.provider.sessionErr = errors.New("provider returned sensitive error")
+		providerErr := errors.New("provider returned sensitive error")
+		f.provider.sessionErr = providerErr
 		code := "sensitive-code-value"
 		result, err := f.service.HandleCallback(context.Background(), code, started.State, "", "")
-		if err != nil || result.Outcome != CallbackFailed || result.Connection.Status != ports.BankConnectionFailed {
+		if !errors.Is(err, providerErr) || !strings.Contains(err.Error(), "provider returned sensitive error") || result.Outcome != "" || result.Connection.Status != "" {
 			t.Fatalf("failed callback = %+v, err=%v", result, err)
 		}
 		failure := f.uow.connections[started.Connection.ID].FailureSummary
