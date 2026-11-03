@@ -23,11 +23,13 @@ directory and create the local environment file:
 ```sh
 mkdir -p secrets
 cp /path/to/exported-private-key.pem secrets/enablebanking.key
-chmod 600 secrets/enablebanking.key
+chmod 644 secrets/enablebanking.key
 openssl rand -base64 32
 cp .env.local.example .env.local
 chmod 600 .env.local
 ```
+
+The container runs as UID 10001; a `0600` key owned by your host user is unreadable.
 
 Edit `.env.local` and fill in the sandbox application UUID in
 `ENABLEBANKING_APPLICATION_ID` and the output of `openssl rand -base64 32` in
@@ -74,8 +76,13 @@ heartbeat is checked below.
    The script prints the connection ID and provider `redirect_url`, but never
    prints the API session token.
 
-3. Open the printed redirect URL in a browser and complete the Fibank sandbox
-   SCA flow. On success, the browser should return to
+3. Open the printed redirect URL in a browser and complete the sandbox SCA flow
+   for the ASPSP you selected (for example **Mock ASPSP** or Genome). The set of
+   sandbox ASPSPs is curated by Enable Banking and changes over time; Fibank and
+   other live banks may only appear for a production application. The Mock ASPSP
+   is the most deterministic option: configure its mock accounts/transactions
+   in the Enable Banking Control Panel first, then the consent screen returns to
+   this API's callback like any other ASPSP. On success, the browser should return to
    `http://localhost:4200/bank/callback?status=completed`.
 
    The frontend branch `feat/enablebanking-fe-phase1` (owned by another agent)
@@ -85,6 +92,8 @@ heartbeat is checked below.
    the frontend.
 
 ## Verify the result
+
+This exact flow has been verified locally end to end with Mock ASPSP (connection reaches `AUTHORIZED`).
 
 Check the connection status and worker heartbeat:
 
@@ -116,6 +125,17 @@ an unrelated, non-sensitive value. An Enable Banking provider HTTP 401 usually
 means the private key does not match the certificate registered for the
 application. A callback 404 usually means the running API image does not include
 the callback route; rebuild/use an image containing this backend branch.
+A 500 on the bank page with `INTERNAL_ERROR` means an upstream provider call
+failed; check the `bank request failed` log line for the cause.
+
+## Troubleshooting
+
+- Repeated `read Enable Banking private key` log lines indicate a permission or
+  missing-file problem. Verify that the key is readable by the container user:
+
+  ```sh
+  docker run --rm --user 10001:10001 -v "$PWD/secrets:/run/secrets:ro" alpine:3.24.3 head -1 /run/secrets/enablebanking.key
+  ```
 
 ## Cleanup
 

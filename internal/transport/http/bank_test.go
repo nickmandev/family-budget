@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -174,6 +175,29 @@ func TestBankStartConnectionReturnsSafeDTOAndMapsErrors(t *testing.T) {
 	unknown := harness.do(t, http.MethodPost, path, `{"aspsp_name":"Example Bank","aspsp_country":"BG"}`, nil)
 	if unknown.Code != http.StatusInternalServerError || !strings.Contains(unknown.Body.String(), `"code":"INTERNAL_ERROR"`) {
 		t.Fatalf("unknown bank error = %d %s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestBankProviderFailureIsLoggedWithRequestID(t *testing.T) {
+	harness, bank := newBankHarness(t)
+	household := harness.createHousehold(t)
+	var logs bytes.Buffer
+	harness.server.deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	bank.startErr = errors.New("upstream provider contract failure")
+	requestID := "bank-provider-request-123"
+	response := harness.do(t, http.MethodPost,
+		"/api/v1/households/"+household.ID+"/bank/connections",
+		`{"aspsp_name":"Example Bank","aspsp_country":"BG"}`,
+		map[string]string{HeaderRequestID: requestID},
+	)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"INTERNAL_ERROR"`) {
+		t.Fatalf("provider failure response = %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "upstream provider contract failure") {
+		t.Fatalf("provider error leaked in response: %s", response.Body.String())
+	}
+	if !strings.Contains(logs.String(), "upstream provider contract failure") || !strings.Contains(logs.String(), requestID) {
+		t.Fatalf("bank failure log = %s, want provider error and request id %q", logs.String(), requestID)
 	}
 }
 

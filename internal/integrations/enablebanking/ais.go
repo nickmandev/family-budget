@@ -24,11 +24,16 @@ type Access struct {
 	ValidUntil *time.Time `json:"valid_until,omitempty"`
 }
 
+type getASPSPsResponse struct {
+	ASPSPs []ASPSP `json:"aspsps"`
+}
+
 type StartAuthorizationRequest struct {
 	Access      *Access  `json:"access,omitempty"`
 	ASPSP       ASPSPRef `json:"aspsp"`
 	State       string   `json:"state"`
 	RedirectURL string   `json:"redirect_url"`
+	PSUType     string   `json:"psu_type,omitempty"`
 }
 
 type StartAuthorizationResponse struct {
@@ -67,14 +72,14 @@ func (c *Client) ListASPSPs(ctx context.Context, country string) ([]ASPSP, error
 		return nil, err
 	}
 
-	var aspsps []ASPSP
-	if err := c.Get(ctx, "/aspsps", url.Values{"country": {country}}, &aspsps); err != nil {
+	var response getASPSPsResponse
+	if err := c.Get(ctx, "/aspsps", url.Values{"country": {country}}, &response); err != nil {
 		return nil, err
 	}
-	if aspsps == nil {
-		aspsps = []ASPSP{}
+	if response.ASPSPs == nil {
+		return nil, errors.New("Enable Banking ASPSP response is missing aspsps array")
 	}
-	return aspsps, nil
+	return response.ASPSPs, nil
 }
 
 // StartAuthorization begins a user authorisation and returns the redirect URL
@@ -86,6 +91,9 @@ func (c *Client) StartAuthorization(ctx context.Context, request StartAuthorizat
 	}
 	if _, err := normalizeCountry(request.ASPSP.Country); err != nil {
 		return StartAuthorizationResponse{}, fmt.Errorf("Enable Banking ASPSP country: %w", err)
+	}
+	if request.Access == nil || request.Access.ValidUntil == nil {
+		return StartAuthorizationResponse{}, errors.New("Enable Banking access scope with valid_until is required")
 	}
 	if strings.TrimSpace(request.State) == "" {
 		return StartAuthorizationResponse{}, errors.New("Enable Banking authorization state is required")

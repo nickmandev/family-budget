@@ -173,15 +173,23 @@ For a localhost sandbox consent round-trip, see the
 
    In either case, `secrets/enablebanking.key` must be an **unencrypted** PEM
    containing a PKCS#1 or PKCS#8 RSA key of at least 2048 bits. If the exported
-   file is passphrase-protected, decrypt it once and restrict its permissions:
+   file is passphrase-protected, decrypt it once:
 
    ```sh
    openssl rsa -in exported-private-key.pem -out secrets/enablebanking.key
-   chmod 600 secrets/enablebanking.key
    ```
 
-   For an already unencrypted key, set its permissions with
-   `chmod 600 secrets/enablebanking.key` as well.
+   The API container runs as UID 10001, so the key must be readable by that
+   user. Set ownership and permissions on the host:
+
+   ```sh
+   sudo chown 10001:10001 secrets/enablebanking.key && sudo chmod 400 secrets/enablebanking.key
+   ```
+
+   The `secrets/` directory must also be traversable by UID 10001: use mode
+   `755`, or mode `750` with group `10001`. A `0600` key owned by another user
+   is unreadable by the container, causing `permission denied` and an API
+   restart loop.
 
 2. Register the Enable Banking application and its certificate with the
    provider. Configure the exact callback URL

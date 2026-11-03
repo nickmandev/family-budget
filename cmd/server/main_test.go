@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"strings"
@@ -247,13 +248,16 @@ func TestBuildServerReportsPrivateKeyPathWithoutContents(t *testing.T) {
 	cfg := enabledBankingConfig()
 	const privateKeyContents = "PRIVATE KEY CONTENT MUST NOT APPEAR"
 	server, err := buildServer(cfg, &fakeDatabase{}, slog.New(slog.NewJSONHandler(io.Discard, nil)), func(string) ([]byte, error) {
-		return nil, errors.New(privateKeyContents)
+		return nil, fs.ErrPermission
 	})
 	if err == nil {
 		t.Fatal("buildServer succeeded despite private key read failure")
 	}
 	if !strings.Contains(err.Error(), cfg.EnableBanking.PrivateKeyFile) {
 		t.Errorf("error %q does not name private key path %q", err, cfg.EnableBanking.PrivateKeyFile)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("error %q does not report permission denied", err)
 	}
 	if strings.Contains(err.Error(), privateKeyContents) {
 		t.Errorf("error leaked private key contents: %v", err)
