@@ -900,6 +900,52 @@ paths:
           $ref: '#/components/responses/InternalError'
         '504':
           $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/bank-imports/preview:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    post:
+      tags: [Transactions]
+      operationId: previewBankStatementImport
+      summary: Parse a bank statement without saving it
+      description: |
+        Authorizes any active household member and returns a normalized
+        statement preview. This operation is stateless and makes no database
+        writes. The multipart request is capped at 10 MiB by the handler;
+        `HTTP_MAX_BODY_BYTES` also applies globally and may need to be raised
+        for large exports, up to 16 MiB.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Normalized statement preview.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
   /households/{id}/transactions/income:
     parameters:
       - $ref: '#/components/parameters/HouseholdID'
@@ -3254,6 +3300,78 @@ components:
             $ref: '#/components/schemas/Transaction'
         next_cursor:
           type: string
+          nullable: true
+    ImportPreviewResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/StatementPreview'
+    StatementPreview:
+      type: object
+      required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, entries]
+      properties:
+        bank:
+          type: string
+          example: fibank
+        format:
+          type: string
+          example: xml
+        iban:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        period_from:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        period_to:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        opening_balance_minor:
+          allOf:
+            - $ref: '#/components/schemas/MinorUnits'
+          nullable: true
+        closing_balance_minor:
+          allOf:
+            - $ref: '#/components/schemas/MinorUnits'
+          nullable: true
+        skipped_rows:
+          type: integer
+          minimum: 0
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementEntry'
+    StatementEntry:
+      type: object
+      required: [external_id, booked_date, value_date, direction, amount_minor, currency, merchant, description, reference, transaction_code, balance_after_minor]
+      properties:
+        external_id:
+          type: string
+        booked_date:
+          $ref: '#/components/schemas/EffectiveDate'
+        value_date:
+          $ref: '#/components/schemas/EffectiveDate'
+        direction:
+          type: string
+          enum: [DEBIT, CREDIT]
+        amount_minor:
+          $ref: '#/components/schemas/MinorUnits'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        merchant:
+          type: string
+        description:
+          type: string
+        reference:
+          type: string
+        transaction_code:
+          type: string
+        balance_after_minor:
+          allOf:
+            - $ref: '#/components/schemas/MinorUnits'
           nullable: true
     BalancesResponse:
       type: object

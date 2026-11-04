@@ -18,6 +18,7 @@ import (
 	"family-budget/internal/auth"
 	"family-budget/internal/config"
 	"family-budget/internal/domain"
+	"family-budget/internal/imports"
 	"family-budget/internal/ports"
 )
 
@@ -536,11 +537,16 @@ func newResourceServer(t *testing.T) *resourceHarness {
 	cfg.Auth.RateLimitMax = 1000
 	cfg.Auth.RateLimitWindow = time.Minute
 
+	importService, err := application.NewImportService(&transactionalMemoryStore{harness: harness}, imports.NewRegistry(imports.NewFibankParser()))
+	if err != nil {
+		t.Fatalf("application.NewImportService: %v", err)
+	}
 	harness.server, err = NewServer(Dependencies{
-		Config: cfg,
-		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Auth:   harness.auth,
-		App:    harness.app,
+		Config:  cfg,
+		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Auth:    harness.auth,
+		App:     harness.app,
+		Imports: importService,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
