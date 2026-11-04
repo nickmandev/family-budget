@@ -135,6 +135,13 @@ type suggestionModel struct {
 	Source            string      `gorm:"column:source"`
 	AmountMinor       int64       `gorm:"column:amount_minor"`
 	Merchant          string      `gorm:"column:merchant"`
+	SourceAccountID   pgtype.UUID `gorm:"column:source_account_id"`
+	EffectiveDate     pgtype.Date `gorm:"column:effective_date"`
+	Direction         *string     `gorm:"column:direction"`
+	Reference         *string     `gorm:"column:reference"`
+	RawDescription    *string     `gorm:"column:raw_description"`
+	ImportBatchID     pgtype.UUID `gorm:"column:import_batch_id"`
+	Fingerprint       *string     `gorm:"column:fingerprint"`
 	State             string      `gorm:"column:state"`
 	CancelReason      *string     `gorm:"column:cancel_reason"`
 	ConfirmationCount int         `gorm:"column:confirmation_count"`

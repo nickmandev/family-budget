@@ -184,6 +184,92 @@ func TestRepositoryCRUDRoundTripAndHouseholdIsolation(t *testing.T) {
 	wantCode(t, err, domain.CodeEntityNotFoundOrNotInHousehold)
 }
 
+func TestImportedSuggestionRepositoryRoundTrip(t *testing.T) {
+	store := testStore(t)
+	repos := store.Repositories()
+	seed := seedHousehold(t, repos, "imported-suggestion")
+	ctx := t.Context()
+
+	batchID := mustID(t)
+	if err := store.DB().Exec(
+		`INSERT INTO bank_import_batches (id, household_id, account_id, bank_code, format, file_name, file_sha256, rows_total, rows_imported, rows_duplicate, rows_failed, created_by)
+		 VALUES (?, ?, ?, 'FIBANK', 'XML', 'statement.xml', 'sha256:file', 1, 1, 0, 0, ?)`,
+		mustUUID(t, batchID), mustUUID(t, seed.householdID.String()), mustUUID(t, seed.accountID.String()), mustUUID(t, seed.userID.String()),
+	).Error; err != nil {
+		t.Fatalf("insert import batch: %v", err)
+	}
+
+	date := time.Now().UTC()
+	date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	provenance := domain.ImportProvenance{
+		AccountID:      seed.accountID,
+		EffectiveDate:  date,
+		Direction:      domain.SuggestionDirectionDebit,
+		Reference:      "statement-ref",
+		RawDescription: "CARD PAYMENT",
+		BatchID:        batchID,
+		Fingerprint:    "sha256:fingerprint",
+	}
+	suggestionID := domain.SuggestionId(mustID(t))
+	suggestion, err := domain.NewImportedSuggestion(
+		suggestionID, domain.TransactionSourceExternalEntry,
+		testPositiveAmount(t, 1_200, seed.currency), "Imported merchant", provenance,
+	)
+	if err != nil {
+		t.Fatalf("new imported suggestion: %v", err)
+	}
+	if err := repos.Suggestions.Create(ctx, seed.householdID, suggestion); err != nil {
+		t.Fatalf("create imported suggestion: %v", err)
+	}
+	assertImportedSuggestion := func(stage string, got *domain.Suggestion) {
+		t.Helper()
+		if got.ID() != suggestionID {
+			t.Fatalf("%s suggestion id = %s, want %s", stage, got.ID(), suggestionID)
+		}
+		gotProvenance, ok := got.Provenance()
+		if !ok || gotProvenance != provenance {
+			t.Fatalf("%s provenance = %+v, %v; want %+v, true", stage, gotProvenance, ok, provenance)
+		}
+	}
+
+	got, err := repos.Suggestions.Get(ctx, seed.householdID, suggestionID)
+	if err != nil {
+		t.Fatalf("get imported suggestion: %v", err)
+	}
+	assertImportedSuggestion("get", got)
+	if err := got.Edit(testPositiveAmount(t, 1_500, seed.currency), "Edited imported merchant"); err != nil {
+		t.Fatalf("edit imported suggestion: %v", err)
+	}
+	if err := repos.Suggestions.Save(ctx, seed.householdID, got, domain.SuggestionStateSuggested); err != nil {
+		t.Fatalf("save edited imported suggestion: %v", err)
+	}
+	got, err = repos.Suggestions.Get(ctx, seed.householdID, suggestionID)
+	if err != nil {
+		t.Fatalf("get edited imported suggestion: %v", err)
+	}
+	assertImportedSuggestion("edit", got)
+	if got.State() != domain.SuggestionStateEdited {
+		t.Fatalf("edited state = %s, want EDITED", got.State())
+	}
+	if err := got.Confirm(); err != nil {
+		t.Fatalf("confirm imported suggestion: %v", err)
+	}
+	if err := repos.Suggestions.Save(ctx, seed.householdID, got, domain.SuggestionStateEdited); err != nil {
+		t.Fatalf("save confirmed imported suggestion: %v", err)
+	}
+	listed, err := repos.Suggestions.List(ctx, seed.householdID)
+	if err != nil {
+		t.Fatalf("list imported suggestions: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("suggestion list length = %d, want 1", len(listed))
+	}
+	assertImportedSuggestion("list", listed[0])
+	if listed[0].State() != domain.SuggestionStateConfirmed {
+		t.Fatalf("listed state = %s, want CONFIRMED", listed[0].State())
+	}
+}
+
 func TestJournalAppendRoundTripPreservesEffects(t *testing.T) {
 	store := testStore(t)
 	repos := store.Repositories()

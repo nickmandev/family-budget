@@ -1899,7 +1899,11 @@ paths:
       description: |
         Confirmation records the externally completed purchase as one committed
         operation and does not pretend the client authorized the real-world
-        payment. Financial mutation; requires `Idempotency-Key`.
+        payment. Set `kind` to `income` to post `OP_INCOME`; this branch requires
+        only `account_id` and ignores purchase/envelope fields. The default
+        `purchase` branch requires `purchase_kind`, `account_id`, and
+        `envelope_id` (and `payment_envelope_id` for card purchases). Financial
+        mutation; requires `Idempotency-Key`.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -3189,20 +3193,44 @@ components:
       allOf:
         - $ref: '#/components/schemas/FinancialRequest'
         - type: object
-          required: [purchase_kind, account_id, envelope_id]
           properties:
+            kind:
+              type: string
+              enum: [income, purchase]
+              default: purchase
+              description: Income requires account_id only; purchase is the default and requires purchase_kind, account_id, and envelope_id.
             purchase_kind:
               $ref: '#/components/schemas/PurchaseKind'
             account_id:
               type: string
               format: uuid
+              description: Required for both income and purchase confirmation.
             envelope_id:
               type: string
               format: uuid
+              description: Required for purchase confirmation; ignored for income.
             payment_envelope_id:
               type: string
               format: uuid
               nullable: true
+              description: Required for card purchases; ignored for income.
+          oneOf:
+            - type: object
+              required: [kind, account_id]
+              properties:
+                kind:
+                  type: string
+                  enum: [income]
+            - type: object
+              required: [kind, purchase_kind, account_id, envelope_id]
+              properties:
+                kind:
+                  type: string
+                  enum: [purchase]
+            - type: object
+              required: [purchase_kind, account_id, envelope_id]
+              not:
+                required: [kind]
     ConvertSuggestionRequest:
       type: object
       required: [kind, target_envelope_id]

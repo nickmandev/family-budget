@@ -25,6 +25,7 @@ type cancelSuggestionRequest struct {
 
 type confirmSuggestionRequest struct {
 	financialRequest
+	Kind              string `json:"kind"`
 	PurchaseKind      string `json:"purchase_kind"`
 	AccountID         string `json:"account_id"`
 	EnvelopeID        string `json:"envelope_id"`
@@ -189,23 +190,37 @@ func (s *Server) handleConfirmSuggestion(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, err)
 		return
 	}
-	kind, err := parsePurchaseKind(request.PurchaseKind)
-	if err != nil {
-		writeError(w, r, err)
+	confirmationKind := application.ConfirmSuggestionKind(strings.ToUpper(strings.TrimSpace(request.Kind)))
+	if confirmationKind == "" {
+		confirmationKind = application.ConfirmSuggestionPurchase
+	}
+	if confirmationKind != application.ConfirmSuggestionPurchase && confirmationKind != application.ConfirmSuggestionIncome {
+		writeError(w, r, domain.NewErrorf(domain.CodeInvalidValue, "unknown suggestion confirmation kind %q", request.Kind))
 		return
+	}
+	var purchaseKind domain.PurchaseKind
+	if confirmationKind == application.ConfirmSuggestionPurchase {
+		purchaseKind, err = parsePurchaseKind(request.PurchaseKind)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 	accountID, err := parseAccountID(request.AccountID, "account_id")
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	envelopeID, err := parseEnvelopeID(request.EnvelopeID, "envelope_id")
-	if err != nil {
-		writeError(w, r, err)
-		return
+	var envelopeID domain.EnvelopeId
+	if confirmationKind == application.ConfirmSuggestionPurchase {
+		envelopeID, err = parseEnvelopeID(request.EnvelopeID, "envelope_id")
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 	var paymentID domain.EnvelopeId
-	if strings.TrimSpace(request.PaymentEnvelopeID) != "" {
+	if confirmationKind == application.ConfirmSuggestionPurchase && strings.TrimSpace(request.PaymentEnvelopeID) != "" {
 		paymentID, err = parseEnvelopeID(request.PaymentEnvelopeID, "payment_envelope_id")
 		if err != nil {
 			writeError(w, r, err)
@@ -218,7 +233,8 @@ func (s *Server) handleConfirmSuggestion(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	suggestion, op, err := s.deps.App.ConfirmSuggestionAsExternalTransaction(r.Context(), mutation, suggestionID, application.ConfirmSuggestionInput{
-		PurchaseKind:      kind,
+		Kind:              confirmationKind,
+		PurchaseKind:      purchaseKind,
 		AccountID:         accountID,
 		EnvelopeID:        envelopeID,
 		PaymentEnvelopeID: paymentID,

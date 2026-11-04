@@ -18,11 +18,20 @@ type CreateSuggestionInput struct {
 // ConfirmSuggestionInput supplies the posting shape for confirming a factual
 // external transaction.
 type ConfirmSuggestionInput struct {
+	Kind              ConfirmSuggestionKind
 	PurchaseKind      domain.PurchaseKind
 	AccountID         domain.AccountId
 	EnvelopeID        domain.EnvelopeId
 	PaymentEnvelopeID domain.EnvelopeId
 }
+
+// ConfirmSuggestionKind selects the factual transaction posting path.
+type ConfirmSuggestionKind string
+
+const (
+	ConfirmSuggestionPurchase ConfirmSuggestionKind = "PURCHASE"
+	ConfirmSuggestionIncome   ConfirmSuggestionKind = "INCOME"
+)
 
 // CreateSuggestion stores a non-financial candidate.
 func (s *Service) CreateSuggestion(ctx context.Context, actor domain.UserId, household domain.HouseholdId, input CreateSuggestionInput) (*domain.Suggestion, error) {
@@ -140,6 +149,15 @@ func (s *Service) CancelSuggestion(ctx context.Context, actor domain.UserId, hou
 // ConfirmSuggestionAsExternalTransaction records the factual transaction and
 // marks the suggestion confirmed in one atomic unit.
 func (s *Service) ConfirmSuggestionAsExternalTransaction(ctx context.Context, mutation Mutation, id domain.SuggestionId, input ConfirmSuggestionInput) (*domain.Suggestion, domain.JournalOperation, error) {
+	if input.Kind == "" {
+		input.Kind = ConfirmSuggestionPurchase
+	}
+	if input.Kind != ConfirmSuggestionPurchase && input.Kind != ConfirmSuggestionIncome {
+		return nil, domain.JournalOperation{}, domain.NewErrorf(domain.CodeInvalidValue, "unknown suggestion confirmation kind %q", input.Kind)
+	}
+	if input.Kind == ConfirmSuggestionIncome && input.AccountID.IsZero() {
+		return nil, domain.JournalOperation{}, domain.NewError(domain.CodeInvalidValue, "income suggestion confirmation requires an account")
+	}
 	var suggestion *domain.Suggestion
 	var operation domain.JournalOperation
 	err := s.uow.WithinTransaction(ctx, func(ctx context.Context, repos ports.Repositories) error {
@@ -151,7 +169,14 @@ func (s *Service) ConfirmSuggestionAsExternalTransaction(ctx context.Context, mu
 		var next *domain.Suggestion
 		op, err := s.executeFinancial(ctx, repos, mutation, func(_ *ledgerSnapshot) (builtOperation, error) {
 			amount := current.Amount()
-			effects, err := suggestionExternalEffects(amount, input.PurchaseKind, input.AccountID, input.EnvelopeID, input.PaymentEnvelopeID)
+			opType := domain.OpExternalTransaction
+			var effects domain.Effects
+			if input.Kind == ConfirmSuggestionIncome {
+				opType = domain.OpIncome
+				effects, err = domain.IncomeReceivedEffects(input.AccountID, amount)
+			} else {
+				effects, err = suggestionExternalEffects(amount, input.PurchaseKind, input.AccountID, input.EnvelopeID, input.PaymentEnvelopeID)
+			}
 			if err != nil {
 				return builtOperation{}, err
 			}
@@ -160,7 +185,7 @@ func (s *Service) ConfirmSuggestionAsExternalTransaction(ctx context.Context, mu
 				return builtOperation{}, err
 			}
 			return builtOperation{
-				opType:  domain.OpExternalTransaction,
+				opType:  opType,
 				source:  current.Source(),
 				amount:  &amount,
 				effects: effects,

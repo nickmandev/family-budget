@@ -261,6 +261,33 @@ func TestFinalSchemaDropsBankConnectionsAndKeepsWorkerHeartbeats(t *testing.T) {
 	if !tables["worker_heartbeats"] {
 		t.Error("worker_heartbeats is absent after applying all Up migrations")
 	}
+	for _, table := range []string{"bank_import_batches", "bank_import_entries"} {
+		if !tables[table] {
+			t.Errorf("%s is absent after applying all Up migrations", table)
+		}
+	}
+}
+
+func TestBankImportSchemaAndSuggestionProvenanceColumns(t *testing.T) {
+	var allUp strings.Builder
+	for _, file := range loadMigrations(t) {
+		allUp.WriteString(file.up)
+		allUp.WriteByte('\n')
+	}
+	up := allUp.String()
+	for _, table := range []string{"bank_import_batches", "bank_import_entries"} {
+		if !strings.Contains(strings.ToLower(up), "create table "+table+" (") {
+			t.Errorf("Up migrations do not create %s", table)
+		}
+	}
+	for _, column := range []string{
+		"source_account_id", "effective_date", "direction", "reference",
+		"raw_description", "import_batch_id", "fingerprint",
+	} {
+		if !regexp.MustCompile(`(?is)ALTER\s+TABLE\s+suggestions.*?ADD\s+COLUMN\s+` + regexp.QuoteMeta(column) + `\b`).MatchString(up) {
+			t.Errorf("Up migrations do not add suggestions.%s", column)
+		}
+	}
 }
 
 // TestDownDropsEveryTable protects the test-teardown path from drifting behind
