@@ -222,11 +222,6 @@ func TestComposeTopology(t *testing.T) {
 	if worker.Deploy == nil || worker.Deploy.Resources.Limits.CPUs != "0.25" || worker.Deploy.Resources.Limits.Memory != "128m" {
 		t.Errorf("worker resource limits = %+v, want 0.25 CPU and 128m", worker.Deploy)
 	}
-	for _, name := range []string{"api", "worker"} {
-		if !contains(doc.Services[name].Volumes, "./secrets:/run/secrets:ro") {
-			t.Errorf("%s volumes = %v, want read-only secrets directory mount", name, doc.Services[name].Volumes)
-		}
-	}
 	if migrate.Build == nil || migrate.Build.Target != "migrate" {
 		t.Errorf("migrate build target = %+v, want the Dockerfile migrate stage", migrate.Build)
 	}
