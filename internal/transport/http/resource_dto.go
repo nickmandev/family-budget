@@ -131,6 +131,12 @@ type suggestionDTO struct {
 	State             string  `json:"state"`
 	CancelReason      *string `json:"cancel_reason"`
 	ConfirmationCount int     `json:"confirmation_count"`
+	AccountID         *string `json:"account_id"`
+	EffectiveDate     *string `json:"effective_date"`
+	Direction         *string `json:"direction"`
+	Reference         *string `json:"reference"`
+	Description       *string `json:"description"`
+	ImportBatchID     *string `json:"import_batch_id"`
 }
 
 func toHouseholdDTO(record ports.HouseholdRecord) householdDTO {
@@ -352,7 +358,26 @@ func toSuggestionDTO(suggestion *domain.Suggestion) suggestionDTO {
 		value := reason
 		dto.CancelReason = &value
 	}
+	if provenance, ok := suggestion.Provenance(); ok {
+		accountID := provenance.AccountID.String()
+		effectiveDate := provenance.EffectiveDate.Format("2006-01-02")
+		direction := string(provenance.Direction)
+		batchID := provenance.BatchID
+		dto.AccountID = &accountID
+		dto.EffectiveDate = &effectiveDate
+		dto.Direction = &direction
+		dto.Reference = optionalStringDTO(provenance.Reference)
+		dto.Description = optionalStringDTO(provenance.RawDescription)
+		dto.ImportBatchID = &batchID
+	}
 	return dto
+}
+
+func optionalStringDTO(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func toSuggestionDTOs(suggestions []*domain.Suggestion) []suggestionDTO {

@@ -164,7 +164,7 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 	if err != nil {
 		return nil, fmt.Errorf("configure application service: %w", err)
 	}
-	importService, err := application.NewImportService(db, imports.NewRegistry(imports.NewFibankParser()))
+	importService, err := application.NewImportService(db, imports.NewRegistry(imports.NewFibankParser()), postgres.UUIDGenerator{}, postgres.SystemClock{})
 	if err != nil {
 		return nil, fmt.Errorf("configure import service: %w", err)
 	}

@@ -122,6 +122,7 @@ func newRepositories(db *gorm.DB) ports.Repositories {
 		Reservations: &reservationRepository{db: db},
 		Plans:        &planRepository{db: db},
 		Suggestions:  &suggestionRepository{db: db},
+		BankImports:  &bankImportRepository{db: db},
 		Idempotency:  &idempotencyRepository{db: db},
 	}
 }
@@ -140,6 +141,7 @@ var (
 	_ ports.ReservationRepository     = (*reservationRepository)(nil)
 	_ ports.PlanRepository            = (*planRepository)(nil)
 	_ ports.SuggestionRepository      = (*suggestionRepository)(nil)
+	_ ports.BankImportRepository      = (*bankImportRepository)(nil)
 	_ ports.IdempotencyRepository     = (*idempotencyRepository)(nil)
 )
 

@@ -36,7 +36,7 @@ type Dependencies struct {
 	// routes are not registered, so health/auth-only tests remain usable.
 	App *application.Service
 
-	// Imports enables stateless bank statement previews when configured.
+	// Imports enables bank statement previews, commits and history when configured.
 	Imports *application.ImportService
 
 	// AuthRateLimiter overrides the limiter built from Config.Auth. It exists

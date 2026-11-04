@@ -361,6 +361,57 @@ type SuggestionRepository interface {
 	Save(ctx context.Context, household domain.HouseholdId, suggestion *domain.Suggestion, expected domain.SuggestionState) error
 }
 
+// BankImportBatchRecord is one persisted statement import attempt.
+type BankImportBatchRecord struct {
+	ID            string
+	HouseholdID   domain.HouseholdId
+	AccountID     domain.AccountId
+	BankCode      string
+	Format        string
+	FileName      string
+	FileSHA256    string
+	PeriodFrom    *time.Time
+	PeriodTo      *time.Time
+	RowsTotal     int
+	RowsImported  int
+	RowsDuplicate int
+	RowsFailed    int
+	CreatedBy     domain.UserId
+	CreatedAt     time.Time
+}
+
+// BankImportEntryRecord is one normalized statement row retained for audit.
+type BankImportEntryRecord struct {
+	ID              string
+	BatchID         string
+	HouseholdID     domain.HouseholdId
+	AccountID       domain.AccountId
+	Fingerprint     string
+	ExternalID      string
+	EffectiveDate   time.Time
+	ValueDate       *time.Time
+	Direction       domain.SuggestionDirection
+	AmountMinor     int64
+	Currency        string
+	Merchant        string
+	Description     string
+	Reference       string
+	TransactionCode string
+	Status          string
+	SuggestionID    *string
+	CreatedAt       time.Time
+}
+
+// BankImportRepository stores import batches and their deduplicated rows.
+type BankImportRepository interface {
+	CreateBatch(ctx context.Context, record BankImportBatchRecord) error
+	UpdateBatchCounts(ctx context.Context, household domain.HouseholdId, id string, imported, duplicate, failed int) error
+	InsertEntry(ctx context.Context, record BankImportEntryRecord) (inserted bool, err error)
+	AttachSuggestion(ctx context.Context, household domain.HouseholdId, entryID, suggestionID string) error
+	ListBatches(ctx context.Context, household domain.HouseholdId) ([]BankImportBatchRecord, error)
+	GetBatch(ctx context.Context, household domain.HouseholdId, id string) (BankImportBatchRecord, error)
+}
+
 // IdempotencyRepository mirrors domain.IdempotencyStore with an explicit
 // household scope (the database key is (household_id, idempotency_key)).
 //
@@ -389,6 +440,7 @@ type Repositories struct {
 	Reservations ReservationRepository
 	Plans        PlanRepository
 	Suggestions  SuggestionRepository
+	BankImports  BankImportRepository
 	Idempotency  IdempotencyRepository
 }
 

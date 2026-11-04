@@ -946,6 +946,76 @@ paths:
           $ref: '#/components/responses/InternalError'
         '504':
           $ref: '#/components/responses/GatewayTimeout'
+  /households/{id}/bank-imports:
+    parameters:
+      - $ref: '#/components/parameters/HouseholdID'
+    get:
+      tags: [Transactions]
+      operationId: listBankStatementImports
+      summary: List persisted bank statement imports
+      description: Returns import batches for any active household member, newest first.
+      responses:
+        '200':
+          description: Import batches in deterministic newest-first order.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankImportListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+    post:
+      tags: [Transactions]
+      operationId: commitBankStatementImport
+      summary: Persist a bank statement as reviewable suggestions
+      description: |
+        Authorizes any active household member and stores a batch, its unique
+        normalized rows and imported suggestions atomically. The multipart
+        request is capped at 10 MiB by the handler.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, account_id]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                account_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Import batch committed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankImportCommitResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
   /households/{id}/transactions/income:
     parameters:
       - $ref: '#/components/parameters/HouseholdID'
@@ -3145,7 +3215,7 @@ components:
       description: |
         Unconfirmed candidate transaction. It has no ledger postings and no
         reservations; it is not a committed financial transaction.
-      required: [id, source, amount_minor, merchant, state, confirmation_count]
+      required: [id, source, amount_minor, merchant, state, confirmation_count, account_id, effective_date, direction, reference, description, import_batch_id]
       properties:
         id:
           type: string
@@ -3164,6 +3234,28 @@ components:
         confirmation_count:
           type: integer
           minimum: 0
+        account_id:
+          type: string
+          format: uuid
+          nullable: true
+        effective_date:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        direction:
+          type: string
+          enum: [DEBIT, CREDIT]
+          nullable: true
+        reference:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        import_batch_id:
+          type: string
+          format: uuid
+          nullable: true
     CreateSuggestionRequest:
       type: object
       required: [source, amount_minor, merchant]
@@ -3335,6 +3427,78 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/StatementPreview'
+    BankImport:
+      type: object
+      required: [id, account_id, bank_code, format, file_name, file_sha256, period_from, period_to, rows_total, rows_imported, rows_duplicate, rows_failed, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        bank_code:
+          type: string
+        format:
+          type: string
+        file_name:
+          type: string
+        file_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        period_from:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        period_to:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        rows_total:
+          type: integer
+          minimum: 0
+        rows_imported:
+          type: integer
+          minimum: 0
+        rows_duplicate:
+          type: integer
+          minimum: 0
+        rows_failed:
+          type: integer
+          minimum: 0
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    BankImportFailure:
+      type: object
+      required: [row_index, reason]
+      properties:
+        row_index:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+    BankImportCommitResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [batch, failures]
+          properties:
+            batch:
+              $ref: '#/components/schemas/BankImport'
+            failures:
+              type: array
+              items:
+                $ref: '#/components/schemas/BankImportFailure'
+    BankImportListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BankImport'
     StatementPreview:
       type: object
       required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, entries]
