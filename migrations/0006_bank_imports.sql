@@ -75,7 +75,7 @@ ALTER TABLE suggestions
     ADD CONSTRAINT suggestions_import_direction_valid CHECK (
         direction IS NULL OR direction IN ('DEBIT', 'CREDIT')
     ),
-    CONSTRAINT suggestions_import_provenance_all_or_nothing CHECK (
+    ADD CONSTRAINT suggestions_import_provenance_all_or_nothing CHECK (
         (source_account_id IS NULL AND effective_date IS NULL AND direction IS NULL AND fingerprint IS NULL AND import_batch_id IS NULL)
         OR
         (source_account_id IS NOT NULL AND effective_date IS NOT NULL AND direction IS NOT NULL AND fingerprint IS NOT NULL AND import_batch_id IS NOT NULL)
