@@ -603,7 +603,7 @@ func suggestionToModel(household domain.HouseholdId, suggestion *domain.Suggesti
 	if err != nil {
 		return suggestionModel{}, err
 	}
-	return suggestionModel{
+	row := suggestionModel{
 		ID:                id,
 		HouseholdID:       householdID,
 		Source:            suggestion.Source().String(),
@@ -614,7 +614,24 @@ func suggestionToModel(household domain.HouseholdId, suggestion *domain.Suggesti
 		ConfirmationCount: suggestion.ConfirmationCount(),
 		CreatedAt:         now.UTC(),
 		UpdatedAt:         now.UTC(),
-	}, nil
+	}
+	if provenance, ok := suggestion.Provenance(); ok {
+		row.SourceAccountID, err = uuidFromDomain(provenance.AccountID.String())
+		if err != nil {
+			return suggestionModel{}, err
+		}
+		row.EffectiveDate = pgtype.Date{Time: provenance.EffectiveDate, Valid: true}
+		direction := string(provenance.Direction)
+		row.Direction = &direction
+		row.Reference = optionalString(provenance.Reference)
+		row.RawDescription = optionalString(provenance.RawDescription)
+		row.ImportBatchID, err = uuidFromDomain(provenance.BatchID)
+		if err != nil {
+			return suggestionModel{}, err
+		}
+		row.Fingerprint = optionalString(provenance.Fingerprint)
+	}
+	return row, nil
 }
 
 // suggestionFromModel rebuilds a suggestion through its public lifecycle
@@ -632,7 +649,28 @@ func suggestionFromModel(row suggestionModel, currency domain.Currency) (*domain
 	if err != nil {
 		return nil, err
 	}
-	suggestion, err := domain.NewSuggestion(domain.SuggestionId(row.ID.String()), source, amount, row.Merchant)
+	var suggestion *domain.Suggestion
+	imported := row.SourceAccountID.Valid || row.EffectiveDate.Valid || row.Direction != nil || row.ImportBatchID.Valid || row.Fingerprint != nil
+	if imported {
+		if !row.SourceAccountID.Valid || !row.EffectiveDate.Valid || row.Direction == nil || !row.ImportBatchID.Valid || row.Fingerprint == nil {
+			return nil, domain.NewError(domain.CodeInvalidValue, "suggestion has incomplete import provenance")
+		}
+		direction, err := domain.ParseSuggestionDirection(*row.Direction)
+		if err != nil {
+			return nil, err
+		}
+		suggestion, err = domain.NewImportedSuggestion(domain.SuggestionId(row.ID.String()), source, amount, row.Merchant, domain.ImportProvenance{
+			AccountID:      domain.AccountId(row.SourceAccountID.String()),
+			EffectiveDate:  row.EffectiveDate.Time,
+			Direction:      direction,
+			Reference:      stringValue(row.Reference),
+			RawDescription: stringValue(row.RawDescription),
+			BatchID:        row.ImportBatchID.String(),
+			Fingerprint:    *row.Fingerprint,
+		})
+	} else {
+		suggestion, err = domain.NewSuggestion(domain.SuggestionId(row.ID.String()), source, amount, row.Merchant)
+	}
 	if err != nil {
 		return nil, err
 	}

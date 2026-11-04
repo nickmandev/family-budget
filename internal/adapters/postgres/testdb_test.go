@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -175,12 +176,25 @@ func readMigrationUp(t *testing.T, name string) string {
 	return raw[upStart+len("-- +goose Up") : downStart]
 }
 
-// applyMigration executes the Goose Up section of the reviewed migration. The
-// schema is the authority, so the test runs the real SQL rather than GORM
-// AutoMigrate.
+// applyMigration executes the full ordered migration set. The schema is the
+// authority, so the test runs the real SQL rather than GORM AutoMigrate.
 func applyMigration(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	executeMigrationUp(t, db, readMigrationUp(t, "0001_initial_schema.sql"))
+
+	entries, err := os.ReadDir(migrationDirectory())
+	if err != nil {
+		t.Fatalf("read migration directory: %v", err)
+	}
+	var migrations []string
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".sql" {
+			migrations = append(migrations, entry.Name())
+		}
+	}
+	sort.Strings(migrations)
+	for _, migration := range migrations {
+		executeMigrationUp(t, db, readMigrationUp(t, migration))
+	}
 }
 
 // executeMigrationUp runs every statement of an Up section.

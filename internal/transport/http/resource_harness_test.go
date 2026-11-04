@@ -18,35 +18,40 @@ import (
 	"family-budget/internal/auth"
 	"family-budget/internal/config"
 	"family-budget/internal/domain"
+	"family-budget/internal/imports"
 	"family-budget/internal/ports"
 )
 
 type memoryLedgerStore struct {
-	mu               sync.Mutex
-	households       map[domain.HouseholdId]ports.HouseholdRecord
-	accounts         map[domain.HouseholdId]map[domain.AccountId]ports.AccountRecord
-	envelopes        map[domain.HouseholdId]map[domain.EnvelopeId]ports.EnvelopeRecord
-	journal          map[domain.HouseholdId][]domain.JournalOperation
-	versions         map[domain.HouseholdId]uint64
-	idempotency      map[string]domain.IdempotencyRecord
-	plans            map[domain.HouseholdId]map[domain.PlanId]*domain.PlannedOperation
-	planStates       map[string]domain.PlanState
-	suggestions      map[domain.HouseholdId]map[domain.SuggestionId]*domain.Suggestion
-	suggestionStates map[string]domain.SuggestionState
+	mu                sync.Mutex
+	households        map[domain.HouseholdId]ports.HouseholdRecord
+	accounts          map[domain.HouseholdId]map[domain.AccountId]ports.AccountRecord
+	envelopes         map[domain.HouseholdId]map[domain.EnvelopeId]ports.EnvelopeRecord
+	journal           map[domain.HouseholdId][]domain.JournalOperation
+	versions          map[domain.HouseholdId]uint64
+	idempotency       map[string]domain.IdempotencyRecord
+	plans             map[domain.HouseholdId]map[domain.PlanId]*domain.PlannedOperation
+	planStates        map[string]domain.PlanState
+	suggestions       map[domain.HouseholdId]map[domain.SuggestionId]*domain.Suggestion
+	suggestionStates  map[string]domain.SuggestionState
+	bankImportBatches map[domain.HouseholdId]map[string]ports.BankImportBatchRecord
+	bankImportEntries map[string]ports.BankImportEntryRecord
 }
 
 func newMemoryLedgerStore() *memoryLedgerStore {
 	return &memoryLedgerStore{
-		households:       make(map[domain.HouseholdId]ports.HouseholdRecord),
-		accounts:         make(map[domain.HouseholdId]map[domain.AccountId]ports.AccountRecord),
-		envelopes:        make(map[domain.HouseholdId]map[domain.EnvelopeId]ports.EnvelopeRecord),
-		journal:          make(map[domain.HouseholdId][]domain.JournalOperation),
-		versions:         make(map[domain.HouseholdId]uint64),
-		idempotency:      make(map[string]domain.IdempotencyRecord),
-		plans:            make(map[domain.HouseholdId]map[domain.PlanId]*domain.PlannedOperation),
-		planStates:       make(map[string]domain.PlanState),
-		suggestions:      make(map[domain.HouseholdId]map[domain.SuggestionId]*domain.Suggestion),
-		suggestionStates: make(map[string]domain.SuggestionState),
+		households:        make(map[domain.HouseholdId]ports.HouseholdRecord),
+		accounts:          make(map[domain.HouseholdId]map[domain.AccountId]ports.AccountRecord),
+		envelopes:         make(map[domain.HouseholdId]map[domain.EnvelopeId]ports.EnvelopeRecord),
+		journal:           make(map[domain.HouseholdId][]domain.JournalOperation),
+		versions:          make(map[domain.HouseholdId]uint64),
+		idempotency:       make(map[string]domain.IdempotencyRecord),
+		plans:             make(map[domain.HouseholdId]map[domain.PlanId]*domain.PlannedOperation),
+		planStates:        make(map[string]domain.PlanState),
+		suggestions:       make(map[domain.HouseholdId]map[domain.SuggestionId]*domain.Suggestion),
+		suggestionStates:  make(map[string]domain.SuggestionState),
+		bankImportBatches: make(map[domain.HouseholdId]map[string]ports.BankImportBatchRecord),
+		bankImportEntries: make(map[string]ports.BankImportEntryRecord),
 	}
 }
 
@@ -60,6 +65,7 @@ func (s *memoryLedgerStore) WithinTransaction(_ context.Context, fn func(context
 		Reservations: &memoryReservations{store: s},
 		Plans:        &memoryPlans{store: s},
 		Suggestions:  &memorySuggestions{store: s},
+		BankImports:  &memoryBankImports{store: s},
 		Idempotency:  &memoryIdempotency{store: s},
 	})
 }
@@ -436,6 +442,82 @@ func (r *memorySuggestions) Save(_ context.Context, household domain.HouseholdId
 	return nil
 }
 
+type memoryBankImports struct{ store *memoryLedgerStore }
+
+func (r *memoryBankImports) CreateBatch(_ context.Context, batch ports.BankImportBatchRecord) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if r.store.bankImportBatches[batch.HouseholdID] == nil {
+		r.store.bankImportBatches[batch.HouseholdID] = make(map[string]ports.BankImportBatchRecord)
+	}
+	r.store.bankImportBatches[batch.HouseholdID][batch.ID] = batch
+	return nil
+}
+
+func (r *memoryBankImports) UpdateBatchCounts(_ context.Context, household domain.HouseholdId, id string, imported, duplicate, failed int) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	batch, ok := r.store.bankImportBatches[household][id]
+	if !ok {
+		return domain.ErrEntityNotFoundOrNotInHousehold
+	}
+	batch.RowsImported, batch.RowsDuplicate, batch.RowsFailed = imported, duplicate, failed
+	r.store.bankImportBatches[household][id] = batch
+	return nil
+}
+
+func (r *memoryBankImports) InsertEntry(_ context.Context, entry ports.BankImportEntryRecord) (bool, error) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	key := entry.HouseholdID.String() + "/" + entry.AccountID.String() + "/" + entry.Fingerprint
+	if _, exists := r.store.bankImportEntries[key]; exists {
+		return false, nil
+	}
+	r.store.bankImportEntries[key] = entry
+	return true, nil
+}
+
+func (r *memoryBankImports) AttachSuggestion(_ context.Context, household domain.HouseholdId, entryID, suggestionID string) error {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	for key, entry := range r.store.bankImportEntries {
+		if entry.HouseholdID != household || entry.ID != entryID {
+			continue
+		}
+		id := suggestionID
+		entry.SuggestionID = &id
+		r.store.bankImportEntries[key] = entry
+		return nil
+	}
+	return domain.ErrEntityNotFoundOrNotInHousehold
+}
+
+func (r *memoryBankImports) ListBatches(_ context.Context, household domain.HouseholdId) ([]ports.BankImportBatchRecord, error) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	items := make([]ports.BankImportBatchRecord, 0, len(r.store.bankImportBatches[household]))
+	for _, batch := range r.store.bankImportBatches[household] {
+		items = append(items, batch)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items, nil
+}
+
+func (r *memoryBankImports) GetBatch(_ context.Context, household domain.HouseholdId, id string) (ports.BankImportBatchRecord, error) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	batch, ok := r.store.bankImportBatches[household][id]
+	if !ok {
+		return ports.BankImportBatchRecord{}, domain.ErrEntityNotFoundOrNotInHousehold
+	}
+	return batch, nil
+}
+
 type memoryIdempotency struct{ store *memoryLedgerStore }
 
 func keyFor(household domain.HouseholdId, key domain.IdempotencyKey) string {
@@ -536,11 +618,16 @@ func newResourceServer(t *testing.T) *resourceHarness {
 	cfg.Auth.RateLimitMax = 1000
 	cfg.Auth.RateLimitWindow = time.Minute
 
+	importService, err := application.NewImportService(&transactionalMemoryStore{harness: harness}, imports.NewRegistry(imports.NewFibankParser()), harness.ids, harness.clock)
+	if err != nil {
+		t.Fatalf("application.NewImportService: %v", err)
+	}
 	harness.server, err = NewServer(Dependencies{
-		Config: cfg,
-		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Auth:   harness.auth,
-		App:    harness.app,
+		Config:  cfg,
+		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Auth:    harness.auth,
+		App:     harness.app,
+		Imports: importService,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -564,6 +651,7 @@ func (t *transactionalMemoryStore) WithinTransaction(ctx context.Context, fn fun
 		Reservations: &memoryReservations{store: t.harness.store},
 		Plans:        &memoryPlans{store: t.harness.store},
 		Suggestions:  &memorySuggestions{store: t.harness.store},
+		BankImports:  &memoryBankImports{store: t.harness.store},
 		Idempotency:  &memoryIdempotency{store: t.harness.store},
 	})
 }

@@ -135,6 +135,13 @@ type suggestionModel struct {
 	Source            string      `gorm:"column:source"`
 	AmountMinor       int64       `gorm:"column:amount_minor"`
 	Merchant          string      `gorm:"column:merchant"`
+	SourceAccountID   pgtype.UUID `gorm:"column:source_account_id"`
+	EffectiveDate     pgtype.Date `gorm:"column:effective_date"`
+	Direction         *string     `gorm:"column:direction"`
+	Reference         *string     `gorm:"column:reference"`
+	RawDescription    *string     `gorm:"column:raw_description"`
+	ImportBatchID     pgtype.UUID `gorm:"column:import_batch_id"`
+	Fingerprint       *string     `gorm:"column:fingerprint"`
 	State             string      `gorm:"column:state"`
 	CancelReason      *string     `gorm:"column:cancel_reason"`
 	ConfirmationCount int         `gorm:"column:confirmation_count"`
@@ -143,6 +150,49 @@ type suggestionModel struct {
 }
 
 func (suggestionModel) TableName() string { return "suggestions" }
+
+type bankImportBatchModel struct {
+	ID            pgtype.UUID `gorm:"column:id;primaryKey"`
+	HouseholdID   pgtype.UUID `gorm:"column:household_id"`
+	AccountID     pgtype.UUID `gorm:"column:account_id"`
+	BankCode      string      `gorm:"column:bank_code"`
+	Format        string      `gorm:"column:format"`
+	FileName      string      `gorm:"column:file_name"`
+	FileSHA256    string      `gorm:"column:file_sha256"`
+	PeriodFrom    *time.Time  `gorm:"column:period_from"`
+	PeriodTo      *time.Time  `gorm:"column:period_to"`
+	RowsTotal     int         `gorm:"column:rows_total"`
+	RowsImported  int         `gorm:"column:rows_imported"`
+	RowsDuplicate int         `gorm:"column:rows_duplicate"`
+	RowsFailed    int         `gorm:"column:rows_failed"`
+	CreatedBy     pgtype.UUID `gorm:"column:created_by"`
+	CreatedAt     time.Time   `gorm:"column:created_at"`
+}
+
+func (bankImportBatchModel) TableName() string { return "bank_import_batches" }
+
+type bankImportEntryModel struct {
+	ID              pgtype.UUID `gorm:"column:id;primaryKey"`
+	BatchID         pgtype.UUID `gorm:"column:batch_id"`
+	HouseholdID     pgtype.UUID `gorm:"column:household_id"`
+	AccountID       pgtype.UUID `gorm:"column:account_id"`
+	Fingerprint     string      `gorm:"column:fingerprint"`
+	ExternalID      string      `gorm:"column:external_id"`
+	EffectiveDate   time.Time   `gorm:"column:effective_date;type:date"`
+	ValueDate       *time.Time  `gorm:"column:value_date;type:date"`
+	Direction       string      `gorm:"column:direction"`
+	AmountMinor     int64       `gorm:"column:amount_minor"`
+	Currency        string      `gorm:"column:currency"`
+	Merchant        string      `gorm:"column:merchant"`
+	Description     string      `gorm:"column:description"`
+	Reference       *string     `gorm:"column:reference"`
+	TransactionCode *string     `gorm:"column:transaction_code"`
+	Status          string      `gorm:"column:status"`
+	SuggestionID    pgtype.UUID `gorm:"column:suggestion_id"`
+	CreatedAt       time.Time   `gorm:"column:created_at"`
+}
+
+func (bankImportEntryModel) TableName() string { return "bank_import_entries" }
 
 // journalOperationModel maps journal_operations. It deliberately has no
 // UpdatedAt column: the table is append-only.

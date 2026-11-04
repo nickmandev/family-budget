@@ -165,10 +165,10 @@ No decision has been made yet on the following. They should not block domain wor
 - Exact API error payload schema.
 - How a planned-repayment source kind maps onto `TransactionSource` (the domain enum is documented in `DOMAIN_MODEL.md` §4; adding a kind such as `PLANNED_REPAYMENT` is a proposed extension to confirm when its commands land).
 
-## Bank connectivity: CSV/Excel statement import instead of a PSD2 aggregator
+## Bank connectivity: statement file import instead of a PSD2 aggregator
 
-**Decision.** Keep the household ledger provider-agnostic and ingest bank activity from statement files (CSV/XLSX) with bank-specific parsing profiles, starting with Fibank.
+**Decision.** Keep the household ledger provider-agnostic and ingest bank activity from statement files with bank-specific parsing profiles. Fibank XML is first, using its proprietary `SYTY_BAL_CUST_MAIN` format; CSV/XLSX decoders may be added later.
 
-**Rationale.** Enable Banking's commercial minimum (quoted at €900/month) is not viable for a personal/family deployment, and every other PSD2 aggregator is either enterprise-priced, closed to new signups, or a single-person shop. Statement import has no recurring cost, no third-party custody of bank credentials, and no licensing requirement; bank-specific profiles absorb per-bank column and date/amount formats.
+**Rationale.** Enable Banking's commercial minimum (quoted at €900/month) is not viable for a personal/family deployment, and every other PSD2 aggregator is either enterprise-priced, closed to new signups, or a single-person shop. Statement import has no recurring cost, no third-party custody of bank credentials, and no licensing requirement; bank-specific decoders absorb per-bank file and date/amount formats.
 
 **Consequences.** The Enable Banking client, callbacks, session storage, secrets mount and configuration were removed before any production release. The sync worker and heartbeat table were kept for future scheduled jobs. Phase-2 suggestion ingestion must carry account, effective date, direction, external reference/fingerprint and import provenance.

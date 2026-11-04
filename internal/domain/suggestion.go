@@ -16,6 +16,46 @@
 // completely before it touches a field.
 package domain
 
+import (
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// SuggestionDirection describes the direction of an imported bank statement row.
+type SuggestionDirection string
+
+const (
+	SuggestionDirectionDebit  SuggestionDirection = "DEBIT"
+	SuggestionDirectionCredit SuggestionDirection = "CREDIT"
+)
+
+// ParseSuggestionDirection validates a raw imported-suggestion direction.
+func ParseSuggestionDirection(raw string) (SuggestionDirection, error) {
+	direction := SuggestionDirection(strings.ToUpper(strings.TrimSpace(raw)))
+	if !direction.IsValid() {
+		return "", NewErrorf(CodeInvalidValue, "unknown suggestion direction %q", raw)
+	}
+	return direction, nil
+}
+
+// IsValid reports whether the direction is supported.
+func (d SuggestionDirection) IsValid() bool {
+	return d == SuggestionDirectionDebit || d == SuggestionDirectionCredit
+}
+
+// ImportProvenance records the immutable statement row details that produced a
+// suggestion. EffectiveDate is normalized to midnight UTC.
+type ImportProvenance struct {
+	AccountID      AccountId
+	EffectiveDate  time.Time
+	Direction      SuggestionDirection
+	Reference      string
+	RawDescription string
+	BatchID        string
+	Fingerprint    string
+}
+
 // SuggestionState is the unconfirmed-transaction lifecycle
 // (STATE_TRANSITIONS §4).
 type SuggestionState string
@@ -124,7 +164,8 @@ type Suggestion struct {
 	amount PositiveAmount
 	// merchant is the candidate merchant text. It is preserved after
 	// cancellation as part of the source fingerprint (Q10).
-	merchant string
+	merchant   string
+	provenance *ImportProvenance
 
 	state        SuggestionState
 	cancelReason string
@@ -132,6 +173,41 @@ type Suggestion struct {
 	// confirmationCount is zero until confirmed. It guards against a second
 	// confirmation accidentally being treated as a fresh confirmation.
 	confirmationCount int
+}
+
+// NewImportedSuggestion creates a suggestion linked to a persisted bank import
+// row. The import provenance is kept unchanged through suggestion lifecycle
+// transitions.
+func NewImportedSuggestion(id SuggestionId, source TransactionSource, amount PositiveAmount, merchant string, provenance ImportProvenance) (*Suggestion, error) {
+	suggestion, err := NewSuggestion(id, source, amount, merchant)
+	if err != nil {
+		return nil, err
+	}
+	if provenance.AccountID.IsZero() {
+		return nil, NewError(CodeInvalidValue, "import provenance requires an account id")
+	}
+	if provenance.EffectiveDate.IsZero() {
+		return nil, NewError(CodeInvalidValue, "import provenance requires an effective date")
+	}
+	effectiveDate := time.Date(provenance.EffectiveDate.UTC().Year(), provenance.EffectiveDate.UTC().Month(), provenance.EffectiveDate.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	if effectiveDate.Year() < 2000 {
+		return nil, NewError(CodeInvalidValue, "import effective date must not be before 2000")
+	}
+	if effectiveDate.After(time.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)) {
+		return nil, NewError(CodeInvalidValue, "import effective date is too far in the future")
+	}
+	if !provenance.Direction.IsValid() {
+		return nil, NewErrorf(CodeInvalidValue, "unknown suggestion direction %q", provenance.Direction)
+	}
+	if provenance.Fingerprint == "" || utf8.RuneCountInString(provenance.Fingerprint) > 256 {
+		return nil, NewError(CodeInvalidValue, "import fingerprint must contain between 1 and 256 characters")
+	}
+	if provenance.BatchID == "" {
+		return nil, NewError(CodeInvalidValue, "import provenance requires a batch id")
+	}
+	provenance.EffectiveDate = effectiveDate
+	suggestion.provenance = &provenance
+	return suggestion, nil
 }
 
 // NewSuggestion creates a SUGGESTED suggestion from candidate fields. The
@@ -193,6 +269,15 @@ func (s *Suggestion) Merchant() string {
 		return ""
 	}
 	return s.merchant
+}
+
+// Provenance returns the immutable import details and whether this suggestion
+// originated from a bank import.
+func (s *Suggestion) Provenance() (ImportProvenance, bool) {
+	if s == nil || s.provenance == nil {
+		return ImportProvenance{}, false
+	}
+	return *s.provenance, true
 }
 
 // State returns the current lifecycle state.

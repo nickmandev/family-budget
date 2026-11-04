@@ -189,6 +189,73 @@ func TestSuggestionLifecycle(t *testing.T) {
 	}
 }
 
+func TestSuggestionIncomeConfirmationAndReplay(t *testing.T) {
+	harness, household, account, _ := setupBudget(t)
+	created := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions",
+		`{"source":"EXTERNAL_ENTRY","amount_minor":2500,"merchant":"Salary"}`, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create suggestion: %d %s", created.Code, created.Body.String())
+	}
+	var suggestion DataResponse[suggestionDTO]
+	decodeResponse(t, created, &suggestion)
+
+	body := `{"effective_date":"2026-10-04","kind":"income","account_id":"` + account.ID + `"}`
+	confirmed := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions/"+suggestion.Data.ID+"/confirm", body, idempotencyHeaders("suggestion-income-confirm"))
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm income suggestion: %d %s", confirmed.Code, confirmed.Body.String())
+	}
+	var confirmedResponse DataResponse[struct {
+		Suggestion suggestionDTO `json:"suggestion"`
+		Operation  operationDTO  `json:"operation"`
+	}]
+	decodeResponse(t, confirmed, &confirmedResponse)
+	if confirmedResponse.Data.Suggestion.State != "CONFIRMED" || confirmedResponse.Data.Operation.Type != "INCOME" {
+		t.Fatalf("income confirmation response = %+v", confirmedResponse.Data)
+	}
+	if len(confirmedResponse.Data.Operation.Postings) != 1 || confirmedResponse.Data.Operation.Postings[0].Kind != "ACCOUNT" || confirmedResponse.Data.Operation.Postings[0].AccountID != account.ID {
+		t.Fatalf("income postings = %+v, want one account posting to %s", confirmedResponse.Data.Operation.Postings, account.ID)
+	}
+
+	replay := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions/"+suggestion.Data.ID+"/confirm", body, idempotencyHeaders("suggestion-income-confirm"))
+	if replay.Code != http.StatusOK {
+		t.Fatalf("income confirmation replay: %d %s", replay.Code, replay.Body.String())
+	}
+	var replayResponse DataResponse[struct {
+		Suggestion suggestionDTO `json:"suggestion"`
+		Operation  operationDTO  `json:"operation"`
+	}]
+	decodeResponse(t, replay, &replayResponse)
+	if replayResponse.Data.Operation.ID != confirmedResponse.Data.Operation.ID {
+		t.Fatalf("replay operation = %s, want %s", replayResponse.Data.Operation.ID, confirmedResponse.Data.Operation.ID)
+	}
+}
+
+func TestSuggestionConfirmationRejectsUnknownKind(t *testing.T) {
+	harness, household, account, _ := setupBudget(t)
+	created := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions",
+		`{"source":"EXTERNAL_ENTRY","amount_minor":2500,"merchant":"Salary"}`, nil)
+	var suggestion DataResponse[suggestionDTO]
+	decodeResponse(t, created, &suggestion)
+
+	response := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions/"+suggestion.Data.ID+"/confirm",
+		`{"effective_date":"2026-10-04","kind":"refund","account_id":"`+account.ID+`"}`, idempotencyHeaders("suggestion-invalid-kind"))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown kind status = %d, want 400: %s", response.Code, response.Body.String())
+	}
+	if got := decodeErrorEnvelope(t, response).Error.Code; got != "INVALID_VALUE" {
+		t.Fatalf("unknown kind error code = %q, want INVALID_VALUE", got)
+	}
+
+	missingAccount := harness.do(t, http.MethodPost, "/api/v1/households/"+household.ID+"/suggestions/"+suggestion.Data.ID+"/confirm",
+		`{"effective_date":"2026-10-04","kind":"income"}`, idempotencyHeaders("suggestion-income-no-account"))
+	if missingAccount.Code != http.StatusBadRequest {
+		t.Fatalf("income without account status = %d, want 400: %s", missingAccount.Code, missingAccount.Body.String())
+	}
+	if got := decodeErrorEnvelope(t, missingAccount).Error.Code; got != "INVALID_VALUE" {
+		t.Fatalf("income without account error code = %q, want INVALID_VALUE", got)
+	}
+}
+
 func TestPlanCancelAndReplay(t *testing.T) {
 	harness, household, account, envelope := setupBudget(t)
 

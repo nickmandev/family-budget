@@ -25,6 +25,7 @@ import (
 	"family-budget/internal/application"
 	"family-budget/internal/auth"
 	"family-budget/internal/config"
+	"family-budget/internal/imports"
 	"family-budget/internal/ports"
 	httpapi "family-budget/internal/transport/http"
 )
@@ -163,6 +164,10 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 	if err != nil {
 		return nil, fmt.Errorf("configure application service: %w", err)
 	}
+	importService, err := application.NewImportService(db, imports.NewRegistry(imports.NewFibankParser()), postgres.UUIDGenerator{}, postgres.SystemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("configure import service: %w", err)
+	}
 
 	server, err := httpapi.NewServer(httpapi.Dependencies{
 		Config:    cfg,
@@ -171,6 +176,7 @@ func buildServer(cfg config.Config, db database, logger *slog.Logger) (*httpapi.
 		Readiness: db.Ping,
 		Auth:      authService,
 		App:       appService,
+		Imports:   importService,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure http server: %w", err)
