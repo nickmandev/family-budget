@@ -11,6 +11,7 @@ Start here when handing this specification to engineering agents.
 - [`DECISIONS.yaml`](DECISIONS.yaml) — compact machine-readable index of the selected defaults.
 - [`AGENT_BRIEF.md`](AGENT_BRIEF.md) — implementation mission, constraints, and expected deliverables.
 - [`STACK_DECISIONS.md`](STACK_DECISIONS.md) — confirmed Go/GORM/PostgreSQL/`net/http` stack, migration discipline, and testing strategy.
+- [`BANK_STATEMENT_IMPORT.md`](BANK_STATEMENT_IMPORT.md) — operational runbook for Fibank XML statement imports, review and troubleshooting.
 
 ## Recommended reading order for agents
 

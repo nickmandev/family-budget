@@ -289,6 +289,13 @@ ship → migrate → up → nginx/certbot → Cloudflare DNS → smoke test.
 
 ## Routine operations
 
+### Bank statement import
+
+Bank statement import requires no provider configuration. Migrations 0006 apply
+automatically with the deployment migrations. See the
+[bank statement import runbook](BANK_STATEMENT_IMPORT.md) for the Fibank XML
+workflow and troubleshooting.
+
 - Logs: `docker compose logs -f api` (json-file driver, 10 MB × 3 files per
   service). Application logs are structured JSON with request IDs; secrets and
   request bodies are not logged.
