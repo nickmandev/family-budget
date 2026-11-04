@@ -167,8 +167,8 @@ No decision has been made yet on the following. They should not block domain wor
 
 ## Bank connectivity: statement file import instead of a PSD2 aggregator
 
-**Decision.** Keep the household ledger provider-agnostic and ingest bank activity from statement files with bank-specific parsing profiles. Fibank XML is first, using its proprietary `SYTY_BAL_CUST_MAIN` format; CSV/XLSX decoders may be added later.
+**Decision.** Keep the household ledger provider-agnostic and ingest bank activity from statement files with bank-specific parsing profiles. Fibank XML import is implemented for its proprietary `SYTY_BAL_CUST_MAIN` format; CSV/XLSX decoders and transfer matching remain future work.
 
 **Rationale.** Enable Banking's commercial minimum (quoted at €900/month) is not viable for a personal/family deployment, and every other PSD2 aggregator is either enterprise-priced, closed to new signups, or a single-person shop. Statement import has no recurring cost, no third-party custody of bank credentials, and no licensing requirement; bank-specific decoders absorb per-bank file and date/amount formats.
 
-**Consequences.** The Enable Banking client, callbacks, session storage, secrets mount and configuration were removed before any production release. The sync worker and heartbeat table were kept for future scheduled jobs. Phase-2 suggestion ingestion must carry account, effective date, direction, external reference/fingerprint and import provenance.
+**Consequences.** The Enable Banking client, callbacks, session storage, secrets mount and configuration were removed before any production release. Statement import creates reviewable suggestions with account, effective date, direction, external reference/fingerprint and import provenance; suggestions affect the ledger only when confirmed. The sync worker and heartbeat table were kept for future scheduled jobs.
