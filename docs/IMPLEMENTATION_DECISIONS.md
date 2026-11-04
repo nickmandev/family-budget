@@ -152,26 +152,6 @@ successful preflight grants API access.
 preflight handling and disabled configuration. Deployment static guards assert
 that the environment variable is wired to the API and documented.
 
-## Enable Banking AIS integration (resolved by owner, 2026-11-02)
-
-**Rule.** The integration is AIS-only and uses server-side signed requests.
-Connections are owner-only for now; member connections follow later. The
-household currency is EUR; non-EUR imports are parked for review. Bulgaria and
-Fibank are the first supported market/bank. Pending imports may be confirmed
-only with explicit disclosure and must reconcile against the booked version;
-amount deltas greater than EUR 2 always require asking the user. Synchronization
-runs in a separate worker process. Provider session IDs are encrypted at rest
-with AES-256-GCM, and callback state is single-use and stored hashed.
-
-**Rationale.** Near-real-time spending capture is useful only if it does not
-weaken accounting truthfulness or turn provider data into an automatic ledger
-fact. Separating the worker makes background failures observable without hiding
-them in API request handling.
-
-**Test impact.** Provider/session/state tests belong in application and
-transport suites; static deployment guards cover the worker image, network,
-healthcheck and secret mounting. Phase-2 matching tests remain outstanding.
-
 ## Still open (not resolved by this document)
 
 No decision has been made yet on the following. They should not block domain work, but each needs a documented proposal with trade-offs before it is finalized:
@@ -184,3 +164,11 @@ No decision has been made yet on the following. They should not block domain wor
 - Reservation expiry/reminder policy.
 - Exact API error payload schema.
 - How a planned-repayment source kind maps onto `TransactionSource` (the domain enum is documented in `DOMAIN_MODEL.md` §4; adding a kind such as `PLANNED_REPAYMENT` is a proposed extension to confirm when its commands land).
+
+## Bank connectivity: CSV/Excel statement import instead of a PSD2 aggregator
+
+**Decision.** Keep the household ledger provider-agnostic and ingest bank activity from statement files (CSV/XLSX) with bank-specific parsing profiles, starting with Fibank.
+
+**Rationale.** Enable Banking's commercial minimum (quoted at €900/month) is not viable for a personal/family deployment, and every other PSD2 aggregator is either enterprise-priced, closed to new signups, or a single-person shop. Statement import has no recurring cost, no third-party custody of bank credentials, and no licensing requirement; bank-specific profiles absorb per-bank column and date/amount formats.
+
+**Consequences.** The Enable Banking client, callbacks, session storage, secrets mount and configuration were removed before any production release. The sync worker and heartbeat table were kept for future scheduled jobs. Phase-2 suggestion ingestion must carry account, effective date, direction, external reference/fingerprint and import provenance.

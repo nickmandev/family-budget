@@ -111,19 +111,18 @@ func (s *Store) WithinTransaction(ctx context.Context, fn func(ctx context.Conte
 // newRepositories binds every repository to one GORM handle (pool or tx).
 func newRepositories(db *gorm.DB) ports.Repositories {
 	return ports.Repositories{
-		Households:      &householdRepository{db: db},
-		BankConnections: &bankConnectionRepository{db: db},
-		Users:           &userRepository{db: db},
-		Sessions:        &sessionRepository{db: db},
-		Heartbeats:      &workerHeartbeatRepository{db: db},
-		Memberships:     &membershipRepository{db: db},
-		Accounts:        &accountRepository{db: db},
-		Envelopes:       &envelopeRepository{db: db},
-		Journal:         &journalRepository{db: db},
-		Reservations:    &reservationRepository{db: db},
-		Plans:           &planRepository{db: db},
-		Suggestions:     &suggestionRepository{db: db},
-		Idempotency:     &idempotencyRepository{db: db},
+		Households:   &householdRepository{db: db},
+		Users:        &userRepository{db: db},
+		Sessions:     &sessionRepository{db: db},
+		Heartbeats:   &workerHeartbeatRepository{db: db},
+		Memberships:  &membershipRepository{db: db},
+		Accounts:     &accountRepository{db: db},
+		Envelopes:    &envelopeRepository{db: db},
+		Journal:      &journalRepository{db: db},
+		Reservations: &reservationRepository{db: db},
+		Plans:        &planRepository{db: db},
+		Suggestions:  &suggestionRepository{db: db},
+		Idempotency:  &idempotencyRepository{db: db},
 	}
 }
 
@@ -131,7 +130,6 @@ func newRepositories(db *gorm.DB) ports.Repositories {
 var (
 	_ ports.UnitOfWork                = (*Store)(nil)
 	_ ports.HouseholdRepository       = (*householdRepository)(nil)
-	_ ports.BankConnectionRepository  = (*bankConnectionRepository)(nil)
 	_ ports.UserRepository            = (*userRepository)(nil)
 	_ ports.SessionRepository         = (*sessionRepository)(nil)
 	_ ports.WorkerHeartbeatRepository = (*workerHeartbeatRepository)(nil)

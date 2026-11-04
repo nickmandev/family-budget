@@ -126,107 +126,14 @@ same variable names to the services that consume them.
 | `POSTGRES_DB` | `family_budget` | `db`, `api`, `migrate`, `worker` |
 | `POSTGRES_SSLMODE` | `disable` on the private network | `api`, `migrate`, `worker` |
 
-### Enable Banking (optional)
+### Worker operations
 
-Enable Banking is disabled by default. The API owns consent and callbacks; the
-separate worker is the background synchronization process. In phase 1 it
-reports health and heartbeats; bank reads are a later phase. Both run with the
-same provider configuration and read-only private-key directory mount.
-For a localhost sandbox consent round-trip, see the
-[Enable Banking local testing runbook](ENABLEBANKING_LOCAL_TESTING.md).
+The worker's health endpoint is private to the Compose network. Its health-check
+port can be configured with `SYNCWORKER_PORT`:
 
-| Variable | Example / default | Consumed by |
-|----------|-------------------|-------------|
-| `ENABLEBANKING_ENABLED` | `false` | `api`, `worker` |
-| `ENABLEBANKING_APPLICATION_ID` | registered application UUID | `api`, `worker` |
-| `ENABLEBANKING_PRIVATE_KEY_FILE` | `/run/secrets/enablebanking.key` | `api`, `worker` |
-| `ENABLEBANKING_REDIRECT_URL` | `https://budget-api.nickmandev.com/callbacks/enablebanking` (loopback HTTP is allowed for local sandbox testing; production must use HTTPS) | `api`, `worker` |
-| `ENABLEBANKING_RESULT_URL` | `https://budget.nickmandev.com/bank/callback` | `api`, `worker` |
-| `ENABLEBANKING_BASE_URL` | `https://api.enablebanking.com` | `api`, `worker` |
-| `ENABLEBANKING_TOKEN_TTL` | `5m` | `api`, `worker` |
-| `ENABLEBANKING_COUNTRY` | `BG` | `api`, `worker` |
-| `ENABLEBANKING_SYNC_INTERVAL` | `6h` | `api`, `worker` |
-| `ENABLEBANKING_ENCRYPTION_KEY` | base64-encoded 32-byte key | `api`, `worker` |
+| Variable | Example | Consumed by |
+|----------|---------|-------------|
 | `SYNCWORKER_PORT` | `8081` | `worker` |
-
-#### Key and provider provisioning
-
-1. Obtain the provider private key using the path that matches how the
-   application was registered:
-
-   - **Registered with a browser-generated key (recommended, and how this
-     deployment was registered):** use the private key exported at registration
-     time and place it at `secrets/enablebanking.key`. Do not run any key-
-     generation command. The key must match the certificate registered for the
-     application ID; regenerating a key for an existing application invalidates
-     signed JWTs.
-   - **Registered by uploading your own certificate:** generate the pair locally
-     and register the certificate with the provider:
-
-     ```sh
-     mkdir -p secrets
-     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-         -out secrets/enablebanking.key
-     openssl req -new -x509 -key secrets/enablebanking.key \
-         -out secrets/enablebanking.crt -days 3650 -subj "/CN=family-budget"
-     ```
-
-   In either case, `secrets/enablebanking.key` must be an **unencrypted** PEM
-   containing a PKCS#1 or PKCS#8 RSA key of at least 2048 bits. If the exported
-   file is passphrase-protected, decrypt it once:
-
-   ```sh
-   openssl rsa -in exported-private-key.pem -out secrets/enablebanking.key
-   ```
-
-   The API container runs as UID 10001, so the key must be readable by that
-   user. Set ownership and permissions on the host:
-
-   ```sh
-   sudo chown 10001:10001 secrets/enablebanking.key && sudo chmod 400 secrets/enablebanking.key
-   ```
-
-   The `secrets/` directory must also be traversable by UID 10001: use mode
-   `755`, or mode `750` with group `10001`. A `0600` key owned by another user
-   is unreadable by the container, causing `permission denied` and an API
-   restart loop.
-
-2. Register the Enable Banking application and its certificate with the
-   provider. Configure the exact callback URL
-   `https://budget-api.nickmandev.com/callbacks/enablebanking` and the browser
-   result page `https://budget.nickmandev.com/bank/callback` in `.env` as
-   `ENABLEBANKING_REDIRECT_URL` and `ENABLEBANKING_RESULT_URL`, respectively.
-3. Keep `secrets/enablebanking.key` on the deployment host only. Never
-   regenerate or rotate this key without re-registering its certificate with
-   the provider. Compose mounts
-   the directory read-only at `/run/secrets`; set
-   `ENABLEBANKING_PRIVATE_KEY_FILE=/run/secrets/enablebanking.key`. The private
-   key must never be committed to git, included in a Docker build context/image,
-   or copied into `.env`. `.gitignore` and `.dockerignore` exclude the secrets
-   directory.
-4. Generate **our** provider-session encryption key locally with
-   `openssl rand -base64 32`, then place the output in the protected `.env` as
-   `ENABLEBANKING_ENCRYPTION_KEY`. It is used only to encrypt provider session
-   IDs at rest in `bank_connections.session_id_encrypted`; it is not issued by
-   or shared with Enable Banking. Do not commit the key. Keep a secure backup:
-   losing it makes stored sessions unreadable, so the connections must be
-   reauthorized.
-5. Set `ENABLEBANKING_ENABLED=true` and fill in the registered application ID
-   and callback configuration. Compose defaults for the API health port and
-   worker interval/country are documented above; restart both long-running
-   services after changing provider configuration.
-
-#### Cloudflare callback exception
-
-Enable Banking returns the user's browser to the API callback. Add a Cloudflare
-skip/bypass rule for `budget-api.nickmandev.com/callbacks/*` so WAF, bot-fight
-mode, or other interactive challenges do not intercept the consent return.
-Add an exception to **Always Use HTTPS** for this path only if a redirect would
-interfere with the provider's registered callback flow; keep the registered
-callback HTTPS and do not weaken edge TLS globally. A Cloudflare challenge page
-at the callback breaks consent completion.
-
-#### Worker operations
 
 Inspect synchronization logs and the persisted heartbeat:
 
@@ -236,13 +143,11 @@ docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select wor
 ```
 
 Run the query with `POSTGRES_USER` and `POSTGRES_DB` available in the shell.
-When Enable Banking is disabled, no scheduled synchronization heartbeat is
-written. When enabled, a missing heartbeat, or a `last_tick_at` older than the configured
-`ENABLEBANKING_SYNC_INTERVAL` plus expected runtime, means the worker is not
-running or is not completing its scheduled pass. A populated error summary
-signals that the worker is alive but its latest pass failed.
+A missing heartbeat or a `last_tick_at` older than the expected job schedule
+means the worker is not running or is not completing its work. A populated error
+summary signals that the worker is alive but its latest pass failed.
 
-### HTTP and frontend configuration
+## HTTP and frontend configuration
 
 | Variable | Example | Consumed by |
 |----------|---------|-------------|
@@ -619,13 +524,11 @@ raising limits on a box that has no memory to spare.
   5432 is reachable only from the internal `backend` network.
 - Containers run as non-root: the API, worker and migrate images use numeric UID
   10001. `migrate` needs no writable filesystem.
-- Secrets live only in the git-ignored `.env` (mode 600) or the excluded host
-  `secrets/` directory and never in the Compose file, image layers or build
-  context (`.dockerignore` excludes `.env*` and `secrets`). The API and worker
-  receive the private key directory read-only. `db`, `api`, `migrate` and
-  `worker` receive the database components they need; application binaries
-  construct the connection URL internally. No proxy container receives
-  database credentials.
+- Database credentials live only in the git-ignored `.env` (mode 600) and never
+  in the Compose file, image layers or build context (`.dockerignore` excludes
+  `.env*`). `db`, `api`, `migrate` and `worker` receive the database components
+  they need; application binaries construct the connection URL internally. No
+  proxy container receives database credentials.
 - Cloudflare is the only public entry point. Its origin firewall allows `:80`
   and `:443` only from the published Cloudflare ranges, which is also what makes
   `CF-Connecting-IP` (and therefore the restored real client IP used for rate

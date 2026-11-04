@@ -245,6 +245,24 @@ func TestForeignKeysReferenceKnownTables(t *testing.T) {
 	}
 }
 
+func TestFinalSchemaDropsBankConnectionsAndKeepsWorkerHeartbeats(t *testing.T) {
+	tables := make(map[string]bool)
+	for _, file := range loadMigrations(t) {
+		for _, name := range tableNames(file.up) {
+			tables[name] = true
+		}
+		for _, match := range dropTableRe.FindAllStringSubmatch(stripLineComments(file.up), -1) {
+			delete(tables, match[1])
+		}
+	}
+	if tables["bank_connections"] {
+		t.Error("bank_connections is present after applying all Up migrations")
+	}
+	if !tables["worker_heartbeats"] {
+		t.Error("worker_heartbeats is absent after applying all Up migrations")
+	}
+}
+
 // TestDownDropsEveryTable protects the test-teardown path from drifting behind
 // the Up section.
 func TestDownDropsEveryTable(t *testing.T) {
