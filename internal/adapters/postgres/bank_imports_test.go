@@ -10,7 +10,6 @@ import (
 
 func TestBankImportRepositoryDeduplicatesEntriesAndRoundTripsBatches(t *testing.T) {
 	store := testStore(t)
-	executeMigrationUp(t, store.DB(), readMigrationUp(t, "0006_bank_imports.sql"))
 	s := seedHousehold(t, store.Repositories(), "bank-import")
 	batchID := mustID(t)
 	periodFrom := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
