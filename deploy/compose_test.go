@@ -245,19 +245,6 @@ func TestComposeTopology(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"api", "worker"} {
-		service := doc.Services[name]
-		for _, component := range []string{
-			"ENABLEBANKING_ENABLED", "ENABLEBANKING_APPLICATION_ID", "ENABLEBANKING_PRIVATE_KEY_FILE",
-			"ENABLEBANKING_REDIRECT_URL", "ENABLEBANKING_RESULT_URL", "ENABLEBANKING_BASE_URL",
-			"ENABLEBANKING_TOKEN_TTL", "ENABLEBANKING_COUNTRY", "ENABLEBANKING_SYNC_INTERVAL",
-			"ENABLEBANKING_ENCRYPTION_KEY",
-		} {
-			if _, ok := service.Environment[component]; !ok {
-				t.Errorf("%s does not receive %s", name, component)
-			}
-		}
-	}
 	if _, ok := worker.Environment["SYNCWORKER_PORT"]; !ok {
 		t.Error("worker does not receive SYNCWORKER_PORT")
 	}
@@ -547,16 +534,6 @@ func TestEnvExampleDocumentsRequiredVariables(t *testing.T) {
 		"AUTH_SESSION_TTL",
 		"AUTH_RATE_LIMIT_MAX",
 		"SYNCWORKER_PORT",
-		"ENABLEBANKING_ENABLED",
-		"ENABLEBANKING_APPLICATION_ID",
-		"ENABLEBANKING_PRIVATE_KEY_FILE",
-		"ENABLEBANKING_REDIRECT_URL",
-		"ENABLEBANKING_RESULT_URL",
-		"ENABLEBANKING_BASE_URL",
-		"ENABLEBANKING_TOKEN_TTL",
-		"ENABLEBANKING_COUNTRY",
-		"ENABLEBANKING_SYNC_INTERVAL",
-		"ENABLEBANKING_ENCRYPTION_KEY",
 	}
 	for _, name := range required {
 		if !strings.Contains(example, name+"=") {

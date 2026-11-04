@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -107,12 +108,11 @@ func workerConfig(port int) config.Config {
 	cfg.Database.Name = "family"
 	cfg.Database.SSLMode = "disable"
 	cfg.SyncWorkerPort = port
-	cfg.EnableBanking.SyncInterval = 20 * time.Millisecond
 	cfg.HTTP.ShutdownTimeout = time.Second
 	return cfg
 }
 
-func TestDisabledIntegrationLogsIdleAndServesHealth(t *testing.T) {
+func TestWorkerReportsHealthWithoutRunningSync(t *testing.T) {
 	port := availablePort(t)
 	cfg := workerConfig(port)
 	db := newFakeDatabase()
@@ -129,9 +129,6 @@ func TestDisabledIntegrationLogsIdleAndServesHealth(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("health status = %d, want 200", response.StatusCode)
 	}
-	if !strings.Contains(logs.String(), "sync worker idle: enable banking is disabled") {
-		t.Fatalf("logs = %q, want idle message", logs.String())
-	}
 	cancel()
 	if err := waitRun(t, done); err != nil {
 		t.Fatalf("run returned %v, want clean shutdown", err)
@@ -141,45 +138,34 @@ func TestDisabledIntegrationLogsIdleAndServesHealth(t *testing.T) {
 	}
 }
 
-func TestEnabledTicksPersistTruncatedErrorAndContinue(t *testing.T) {
-	port := availablePort(t)
-	cfg := workerConfig(port)
-	cfg.EnableBanking.Enabled = true
-	cfg.EnableBanking.Country = "BG"
+func TestRunTickPersistsTruncatedErrorAndContinues(t *testing.T) {
 	db := newFakeDatabase()
-	var syncCalls sync.Mutex
 	callCount := 0
-	ctx, cancel := context.WithCancel(context.Background())
-	done := startRun(ctx, runDeps{
-		loadConfig:   func() (config.Config, error) { return cfg, nil },
-		openDatabase: func(config.Config) (database, error) { return db, nil },
-		stderr:       io.Discard,
-		sync: func(context.Context) error {
-			syncCalls.Lock()
-			callCount++
-			syncCalls.Unlock()
-			return errors.New(strings.Repeat("x", 650))
-		},
-	})
-
-	var first, second ports.WorkerHeartbeatRecord
-	select {
-	case first = <-db.updates:
-	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not write a heartbeat")
+	syncFn := func(context.Context) error {
+		callCount++
+		if callCount == 1 {
+			return nil
+		}
+		return errors.New(strings.Repeat("x", 650))
 	}
-	select {
-	case second = <-db.updates:
-	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not continue after the failed tick")
-	}
-	cancel()
-	if err := waitRun(t, done); err != nil {
-		t.Fatalf("run returned %v, want clean shutdown", err)
+	startedAt := time.Now().UTC()
+	firstTick := startedAt.Add(time.Second)
+	secondTick := firstTick.Add(time.Second)
+	var logs lockedBuffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	runTick(context.Background(), db, logger, syncFn, startedAt, firstTick)
+	runTick(context.Background(), db, logger, syncFn, startedAt, secondTick)
+	if callCount != 2 {
+		t.Fatalf("sync calls = %d, want 2", callCount)
 	}
 
+	first := <-db.updates
+	second := <-db.updates
 	if first.WorkerName != workerName || first.StartedAt.IsZero() || first.LastTickAt.IsZero() {
 		t.Fatalf("first heartbeat = %+v", first)
+	}
+	if first.LastErrorAt != nil || first.LastErrorSummary != nil {
+		t.Errorf("successful tick recorded an error: %+v", first)
 	}
 	if second.LastErrorAt == nil || second.LastErrorSummary == nil {
 		t.Fatalf("second heartbeat has no recorded error: %+v", second)
@@ -187,11 +173,8 @@ func TestEnabledTicksPersistTruncatedErrorAndContinue(t *testing.T) {
 	if got := len([]rune(*second.LastErrorSummary)); got != 500 {
 		t.Errorf("error summary length = %d runes, want 500", got)
 	}
-	syncCalls.Lock()
-	calls := callCount
-	syncCalls.Unlock()
-	if calls < 2 {
-		t.Errorf("sync calls = %d, want at least 2 after an error", calls)
+	if !strings.Contains(logs.String(), "sync tick failed") {
+		t.Errorf("logs = %q, want failed tick log", logs.String())
 	}
 }
 

@@ -138,7 +138,7 @@ func joinServerPath(base, path string) string {
 }
 
 func TestOpenAPIRouteCoverage(t *testing.T) {
-	harness, _ := newBankHarness(t)
+	harness := newResourceServer(t)
 	spec := loadContractSpec(t)
 	documented, operationIDs := documentedOperations(spec)
 

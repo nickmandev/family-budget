@@ -1,6 +1,6 @@
 // Command syncworker is the separately deployable background-process
-// entrypoint. Phase 1 reports worker liveness; bank synchronization is added
-// behind SyncFunc in a later phase.
+// entrypoint. It reports worker liveness; data synchronization is added behind
+// SyncFunc in a later phase.
 package main
 
 import (
@@ -23,7 +23,7 @@ import (
 	"family-budget/internal/ports"
 )
 
-const workerName = "enablebanking-sync"
+const workerName = "sync"
 
 // SyncFunc performs one background sync pass. Phase 2 provides the real
 // implementation; the skeleton logs and returns nil. Errors must not include
@@ -96,9 +96,6 @@ func run(ctx context.Context, deps runDeps) error {
 	if cfg.SyncWorkerPort < 1 || cfg.SyncWorkerPort > 65535 {
 		return fmt.Errorf("%s must be between 1 and 65535", config.EnvSyncWorkerPort)
 	}
-	if cfg.EnableBanking.SyncInterval <= 0 {
-		return fmt.Errorf("%s must be positive", config.EnvEnableBankingSyncInterval)
-	}
 	logger := slog.New(slog.NewJSONHandler(deps.stderr, nil))
 
 	db, err := deps.openDatabase(cfg)
@@ -144,13 +141,8 @@ func run(ctx context.Context, deps runDeps) error {
 	}()
 
 	startedAt := time.Now().UTC()
-	if cfg.EnableBanking.Enabled {
-		logger.Info("sync worker started", "interval", cfg.EnableBanking.SyncInterval, "country", cfg.EnableBanking.Country)
-	} else {
-		logger.Info("sync worker idle: enable banking is disabled")
-	}
 
-	ticker := time.NewTicker(cfg.EnableBanking.SyncInterval)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -167,9 +159,6 @@ func run(ctx context.Context, deps runDeps) error {
 			}
 			return nil
 		case now := <-ticker.C:
-			if !cfg.EnableBanking.Enabled {
-				continue
-			}
 			runTick(ctx, db, logger, deps.sync, startedAt, now.UTC())
 		}
 	}
