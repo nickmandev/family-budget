@@ -137,3 +137,31 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ steps.image.outputs.owner }}/family-budget-migrate:${{ steps.release.outputs.version }}
+
+  create-release:
+    name: Create GitHub release
+    needs: publish-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate release notes and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          body="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$TAG" --jq .body)"
+          images="$(printf 'Container images:\n- `ghcr.io/%s/family-budget-api:%s`\n- `ghcr.io/%s/family-budget-migrate:%s`' "$owner" "$version" "$owner" "$version")"
+          notes="${body}"$'\n\n'"${images}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes "$notes"
+          else
+            gh release create "$TAG" --title "$TAG" --notes "$notes" --verify-tag
+          fi

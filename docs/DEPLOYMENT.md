@@ -399,6 +399,11 @@ git tag -a v1.2.3 -m "Release v1.2.3"
 git push origin v1.2.3
 ```
 
+Pushing a `vMAJOR.MINOR.PATCH` tag also creates a GitHub Release with
+auto-generated notes and references to the published GHCR images. The release is
+created only after both images publish successfully; re-running the workflow
+updates the existing release instead of failing.
+
 The workflow maps `v1.2.3` to the GHCR image tag and the poller updates only
 `APP_VERSION` in the VPS `.env`. `.env.example` defaults it to `1.0.0` for
 existing installations. The deploy script restores the previous app version and
