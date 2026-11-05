@@ -18,12 +18,11 @@ func TestComposeApplicationImagesUseReleaseVersion(t *testing.T) {
 }
 
 func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
-	workflow := readDeployFile(t, ".github/workflows/ci.yml")
+	workflow := readDeployFile(t, ".github/workflows/release-images.yml")
 	for _, want := range []string{
 		"tags: [\"v*\"]",
-		"publish-release:",
+		"uses: ./.github/workflows/test.yml",
 		"needs: test",
-		"startsWith(github.ref, 'refs/tags/v')",
 		"packages: write",
 		"docker/login-action@v3",
 		"docker/build-push-action@v6",
@@ -34,9 +33,39 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 			t.Errorf("release workflow does not contain %q", want)
 		}
 	}
-	for _, forbidden := range []string{"HETZNER_SSH_PRIVATE_KEY", "HETZNER_HOST", "scp ", "ssh ", "deploy-release.sh"} {
+	testWorkflow := readDeployFile(t, ".github/workflows/test.yml")
+	for _, want := range []string{"workflow_call:", "  test:"} {
+		if !strings.Contains(testWorkflow, want) {
+			t.Errorf("verification workflow does not contain %q", want)
+		}
+	}
+	for _, forbidden := range []string{"HETZNER_", "scp ", "ssh ", "deploy-release.sh"} {
 		if strings.Contains(workflow, forbidden) {
 			t.Errorf("release publication workflow contains direct VPS deployment detail %q", forbidden)
+		}
+	}
+}
+
+func TestReleaseNotesWorkflowRunsAfterImages(t *testing.T) {
+	workflow := readDeployFile(t, ".github/workflows/release-notes.yml")
+	for _, want := range []string{
+		"workflow_run:",
+		"workflows: [\"Release images\"]",
+		"types: [completed]",
+		"conclusion == 'success'",
+		"contents: write",
+		"releases/generate-notes",
+		"gh release create",
+		"gh release edit",
+		"head_branch",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("release notes workflow does not contain %q", want)
+		}
+	}
+	for _, forbidden := range []string{"HETZNER_", "scp ", "ssh ", "deploy-release.sh"} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("release notes workflow contains direct VPS deployment detail %q", forbidden)
 		}
 	}
 }
