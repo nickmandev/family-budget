@@ -21,6 +21,8 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 	workflow := readDeployFile(t, ".github/workflows/release-images.yml")
 	for _, want := range []string{
 		"tags: [\"v*\"]",
+		"workflow_call:",
+		"inputs.tag || github.ref_name",
 		"uses: ./.github/workflows/test.yml",
 		"needs: test",
 		"packages: write",
@@ -50,9 +52,12 @@ func TestReleaseNotesWorkflowRunsAfterImages(t *testing.T) {
 	workflow := readDeployFile(t, ".github/workflows/release-notes.yml")
 	for _, want := range []string{
 		"workflow_run:",
+		"workflow_call:",
 		"workflows: [\"Release images\"]",
 		"types: [completed]",
+		"github.event_name != 'workflow_run'",
 		"conclusion == 'success'",
+		"inputs.tag || github.event.workflow_run.head_branch",
 		"contents: write",
 		"releases/generate-notes",
 		"gh release create",
@@ -70,8 +75,30 @@ func TestReleaseNotesWorkflowRunsAfterImages(t *testing.T) {
 	}
 }
 
+func TestReleasePlanWorkflowDerivesVersionFromCommits(t *testing.T) {
+	workflow := readDeployFile(t, ".github/workflows/release-plan.yml")
+	for _, want := range []string{
+		"scripts/next-version.sh",
+		"workflow_call",
+		"uses: ./.github/workflows/release-images.yml",
+		"uses: ./.github/workflows/release-notes.yml",
+		"should_release",
+		"contents: write",
+		"tag: ${{ needs.plan.outputs.tag }}",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("release plan workflow does not contain %q", want)
+		}
+	}
+	for _, forbidden := range []string{"HETZNER_", "scp ", "ssh ", "deploy-release.sh"} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("release plan workflow contains direct VPS deployment detail %q", forbidden)
+		}
+	}
+}
+
 func TestVPSReleaseScriptsParseAndKeepSafetySteps(t *testing.T) {
-	for _, path := range []string{"scripts/check-release.sh", "scripts/deploy-release.sh"} {
+	for _, path := range []string{"scripts/check-release.sh", "scripts/deploy-release.sh", "scripts/next-version.sh"} {
 		if output, err := exec.Command("bash", "-n", filepath.Join("..", path)).CombinedOutput(); err != nil {
 			t.Fatalf("bash -n %s: %v\n%s", path, err, output)
 		}

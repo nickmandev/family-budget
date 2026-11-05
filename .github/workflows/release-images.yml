@@ -3,6 +3,12 @@ name: Release images
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag, e.g. v1.2.0
+        required: true
+        type: string
 
 concurrency:
   group: release-images-${{ github.ref }}
@@ -30,16 +36,18 @@ jobs:
       - name: Validate release tag and ancestry
         id: release
         shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "Release tags must use vMAJOR.MINOR.PATCH (for example v1.2.3). Got: $GITHUB_REF_NAME" >&2
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH (for example v1.2.3). Got: $TAG" >&2
             exit 1
           fi
           version="${BASH_REMATCH[1]}"
           git fetch origin main --depth=1
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "Refusing to deploy: release tag $GITHUB_REF_NAME does not point to a commit on origin/main." >&2
+            echo "Refusing to deploy: release tag $TAG does not point to a commit on origin/main." >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
