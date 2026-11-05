@@ -321,11 +321,15 @@ workflow and troubleshooting.
 
 ## Automated release deployment
 
-The workflow in `.github/workflows/ci.yml` runs the normal verification suite on
-pull requests and `main` pushes. When a `vMAJOR.MINOR.PATCH` tag is pushed to a
-commit already on `main`, it runs verification and publishes versioned API and
-migration images to GitHub Container Registry (GHCR). It does **not** connect to
-the VPS or require a Hetzner SSH secret.
+The reusable verification workflow in `.github/workflows/test.yml` runs the
+normal suite on pull requests and `main` pushes. A `vMAJOR.MINOR.PATCH` tag
+push runs verification through `test.yml`, then publishes versioned API and
+migration images through `.github/workflows/release-images.yml`. Only after both
+images publish successfully, `.github/workflows/release-notes.yml` creates a
+GitHub Release with generated notes and GHCR image references. Re-running the
+release workflow updates the existing release. The VPS poller remains
+tag-based and unchanged. These GitHub workflows do **not** connect to the VPS
+or require a Hetzner SSH secret.
 
 The VPS-side systemd timer polls the existing clone for new stable tags reachable
 from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
