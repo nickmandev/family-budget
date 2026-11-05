@@ -322,14 +322,24 @@ workflow and troubleshooting.
 ## Automated release deployment
 
 The reusable verification workflow in `.github/workflows/test.yml` runs the
-normal suite on pull requests and `main` pushes. A `vMAJOR.MINOR.PATCH` tag
-push runs verification through `test.yml`, then publishes versioned API and
-migration images through `.github/workflows/release-images.yml`. Only after both
-images publish successfully, `.github/workflows/release-notes.yml` creates a
-GitHub Release with generated notes and GHCR image references. Re-running the
-release workflow updates the existing release. The VPS poller remains
-tag-based and unchanged. These GitHub workflows do **not** connect to the VPS
-or require a Hetzner SSH secret.
+normal suite on pull requests and `main` pushes. Releases are cut automatically
+by `.github/workflows/release-plan.yml`: on every push to `main` it runs
+`scripts/next-version.sh`, which derives the next `vMAJOR.MINOR.PATCH` from the
+Conventional Commits since the newest release tag. `feat` bumps the minor,
+`fix` and `perf` bump the patch, and a `!` after the type or a
+`BREAKING CHANGE:`/`BREAKING-CHANGE:` footer bumps the major;
+`docs`/`chore`/`test`/`ci`/`refactor` commits (and merge commits) do not
+trigger a release. When at least one releasable commit exists, the plan
+workflow creates and pushes the tag, then drives
+`.github/workflows/release-images.yml` (verification through `test.yml` first,
+then the versioned API and migration images) and
+`.github/workflows/release-notes.yml` (GitHub Release with generated notes and
+GHCR image references) through `workflow_call`, so no personal access token or
+manual tag is required. Merging a `feat:`/`fix:`/`perf:`/breaking commit to
+`main` therefore releases — and the VPS timer then deploys — automatically.
+Re-running the release workflow updates the existing release. The VPS poller
+remains tag-based and unchanged. These GitHub workflows do **not** connect to
+the VPS or require a Hetzner SSH secret.
 
 The VPS-side systemd timer polls the existing clone for new stable tags reachable
 from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
@@ -402,8 +412,17 @@ editing tracked Compose or script files on the VPS.
 
 ### Releasing
 
-Create a stable semantic-version tag on a commit already merged to `main` and
-push it:
+Nothing to do for the normal path: the release plan workflow derives the next
+`vMAJOR.MINOR.PATCH` from the Conventional Commits merged to `main`
+(`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE` or a `!` after the
+type → major; `docs`/`chore`/`test`/`ci`/`refactor` do not release), creates
+the tag on `main`, publishes the versioned images, and creates the GitHub
+Release with generated notes and GHCR references. The VPS poller picks the new
+tag up unchanged on its next timer run. A releasable merge to `main` therefore
+deploys automatically.
+
+A manual release still works and goes through the same image and release
+pipeline: tag a commit already on `main` and push the tag.
 
 ```sh
 git tag -a v1.2.3 -m "Release v1.2.3"

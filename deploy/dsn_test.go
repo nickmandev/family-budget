@@ -47,7 +47,9 @@ func TestNoUserSuppliedConnectionURLRemains(t *testing.T) {
 		".env.example",
 		"Dockerfile",
 		filepath.Join("scripts", "integration-test.sh"),
+		filepath.Join("scripts", "next-version.sh"),
 		filepath.Join(".github", "workflows", "test.yml"),
+		filepath.Join(".github", "workflows", "release-plan.yml"),
 		filepath.Join(".github", "workflows", "release-images.yml"),
 		filepath.Join(".github", "workflows", "release-notes.yml"),
 	}
