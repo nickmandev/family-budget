@@ -31,13 +31,25 @@ type Entry struct {
 }
 
 // ParseFailure records one rejected raw row. Reason is safe and value-free.
-// RowIndex is the 0-based index in the raw row sequence of the source
-// statement (for Fibank, the SYTY_BAL_CUST_STMT sequence, including skipped
-// rows), so parser failures and application validation failures share one
-// numbering.
+// The detail fields contain only the row's own content and are returned to
+// the authenticated household in the HTTP response so it can be recreated;
+// they are never persisted or logged. RowIndex is the 0-based index in the raw
+// row sequence of the source statement (for Fibank, the SYTY_BAL_CUST_STMT
+// sequence, including skipped rows), so parser failures and application
+// validation failures share one numbering.
 type ParseFailure struct {
-	RowIndex int
-	Reason   string
+	RowIndex        int
+	Reason          string
+	ExternalID      *string
+	BookedDate      *time.Time
+	ValueDate       *time.Time
+	Direction       Direction
+	AmountMinor     *int64
+	Currency        string
+	Merchant        string
+	Description     string
+	Reference       string
+	TransactionCode string
 }
 
 // Statement contains normalized account metadata and transactions only. Raw

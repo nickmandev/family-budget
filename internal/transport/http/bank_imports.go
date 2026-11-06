@@ -68,8 +68,18 @@ type bankImportBatchDTO struct {
 }
 
 type bankImportFailureDTO struct {
-	RowIndex int    `json:"row_index"`
-	Reason   string `json:"reason"`
+	RowIndex        int     `json:"row_index"`
+	Reason          string  `json:"reason"`
+	ExternalID      *string `json:"external_id"`
+	BookedDate      *string `json:"booked_date"`
+	ValueDate       *string `json:"value_date"`
+	Direction       *string `json:"direction"`
+	AmountMinor     *int64  `json:"amount_minor"`
+	Currency        *string `json:"currency"`
+	Merchant        *string `json:"merchant"`
+	Description     *string `json:"description"`
+	Reference       *string `json:"reference"`
+	TransactionCode *string `json:"transaction_code"`
 }
 
 type bankImportCommitDTO struct {
@@ -137,7 +147,7 @@ func (s *Server) handleBankImportCommit(w http.ResponseWriter, r *http.Request) 
 	}
 	failures := make([]bankImportFailureDTO, 0, len(result.Failures))
 	for _, failure := range result.Failures {
-		failures = append(failures, bankImportFailureDTO{RowIndex: failure.RowIndex, Reason: failure.Reason})
+		failures = append(failures, toBankImportFailureDTO(failure))
 	}
 	writeJSON(w, http.StatusCreated, DataResponse[bankImportCommitDTO]{Data: bankImportCommitDTO{
 		Batch: toBankImportBatchDTO(result.Batch), Failures: failures,
@@ -274,7 +284,7 @@ func toStatementDTO(preview application.ImportPreview) statementDTO {
 	}
 	failures := make([]bankImportFailureDTO, 0, len(preview.Failures))
 	for _, failure := range preview.Failures {
-		failures = append(failures, bankImportFailureDTO{RowIndex: failure.RowIndex, Reason: failure.Reason})
+		failures = append(failures, toBankImportFailureDTO(failure))
 	}
 	return statementDTO{
 		Bank:                statement.Bank,
@@ -289,6 +299,37 @@ func toStatementDTO(preview application.ImportPreview) statementDTO {
 		Entries:             entries,
 		Failures:            failures,
 	}
+}
+
+func toBankImportFailureDTO(failure application.ImportFailure) bankImportFailureDTO {
+	var bookedDate, valueDate, direction *string
+	if failure.BookedDate != nil {
+		bookedDate = stringValuePointer(formatStatementDate(*failure.BookedDate))
+	}
+	if failure.ValueDate != nil {
+		valueDate = stringValuePointer(formatStatementDate(*failure.ValueDate))
+	}
+	if failure.Direction != "" {
+		direction = stringValuePointer(string(failure.Direction))
+	}
+	return bankImportFailureDTO{
+		RowIndex: failure.RowIndex, Reason: failure.Reason,
+		ExternalID: cloneHTTPPointer(failure.ExternalID), BookedDate: bookedDate, ValueDate: valueDate,
+		Direction: direction, AmountMinor: cloneHTTPPointer(failure.AmountMinor),
+		Currency: stringValuePointer(failure.Currency), Merchant: stringValuePointer(failure.Merchant),
+		Description: stringValuePointer(failure.Description), Reference: stringValuePointer(failure.Reference),
+		TransactionCode: stringValuePointer(failure.TransactionCode),
+	}
+}
+
+func stringValuePointer(value string) *string { return &value }
+
+func cloneHTTPPointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func formatStatementDate(date time.Time) string {

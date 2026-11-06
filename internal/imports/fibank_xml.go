@@ -209,7 +209,7 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			if value := strings.TrimSpace(row.Amount); value != "" {
 				parsed, ok := parseSignedMinor(value)
 				if !ok {
-					statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "closing balance row is invalid"})
+					statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "closing balance row is invalid"))
 				} else {
 					statement.ClosingBalanceMinor = &parsed
 					closingRowFound = true
@@ -222,7 +222,7 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		}
 		amount, ok := parseUnsignedMinor(row.Amount)
 		if !ok {
-			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "amount is unparseable"})
+			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "amount is unparseable"))
 			continue
 		}
 		if amount == 0 {
@@ -236,17 +236,17 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		case "C":
 			direction = DirectionCredit
 		default:
-			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "debit/credit indicator is unknown"})
+			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "debit/credit indicator is unknown"))
 			continue
 		}
 		bookedDate, bookedOK := parseFibankDate(row.BookedDate)
 		valueDate, valueOK := parseFibankDate(row.ValueDate)
 		if !bookedOK {
-			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "booked date is unparseable"})
+			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "booked date is unparseable"))
 			continue
 		}
 		if !valueOK {
-			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "value date is unparseable"})
+			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "value date is unparseable"))
 			continue
 		}
 		entry := Entry{
@@ -278,6 +278,37 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 	}
 	return statement, nil
 }
+
+func fibankFailure(row fibankRow, rowIndex int, currency, reason string) ParseFailure {
+	failure := ParseFailure{
+		RowIndex:        rowIndex,
+		Reason:          reason,
+		ExternalID:      stringPointer(strings.TrimSpace(row.EntryID)),
+		Currency:        currency,
+		Merchant:        fibankMerchant(row),
+		Description:     fibankDescription(row),
+		Reference:       strings.TrimSpace(row.Reference),
+		TransactionCode: strings.TrimSpace(row.TransactionCode),
+	}
+	switch strings.TrimSpace(row.Direction) {
+	case "D":
+		failure.Direction = DirectionDebit
+	case "C":
+		failure.Direction = DirectionCredit
+	}
+	if amount, ok := parseUnsignedMinor(row.Amount); ok {
+		failure.AmountMinor = &amount
+	}
+	if bookedDate, ok := parseFibankDate(row.BookedDate); ok {
+		failure.BookedDate = &bookedDate
+	}
+	if valueDate, ok := parseFibankDate(row.ValueDate); ok {
+		failure.ValueDate = &valueDate
+	}
+	return failure
+}
+
+func stringPointer(value string) *string { return &value }
 
 func parseFibankDate(value string) (time.Time, bool) {
 	parsed, err := time.Parse("02/01/2006", strings.TrimSpace(value))

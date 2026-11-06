@@ -51,7 +51,7 @@ func TestBankImportPreviewReturnsStatelessStatement(t *testing.T) {
 		t.Fatalf("preview failures = %+v, want 3 currency mismatches", response.Data.Failures)
 	}
 	for index, failure := range response.Data.Failures {
-		if failure.Reason != "currency EUR does not match household currency" {
+		if failure.Reason != "currency does not match household currency" {
 			t.Errorf("failure %d = %+v", index, failure)
 		}
 	}
@@ -66,9 +66,21 @@ func TestBankImportPreviewReportsBadRowsAsFailures(t *testing.T) {
 	row := func(direction string) string {
 		return `<SYTY_BAL_CUST_STMT><TRN_TYPE>DE</TRN_TYPE><AC_ENTRY_SR_NO>` + direction + `</AC_ENTRY_SR_NO><VALUE_DT>01/10/2026</VALUE_DT><DATE_TIME>02/10/2026</DATE_TIME><AMOUNT>12.34</AMOUNT><DTKT>` + direction + `</DTKT></SYTY_BAL_CUST_STMT>`
 	}
+	unknownDirection := strings.Replace(row("D"), "</SYTY_BAL_CUST_STMT>", `<TRNAME>PRIVATE-FAILURE-MERCHANT</TRNAME><REFERENCE>PRIVATE-FAILURE-REFERENCE</REFERENCE></SYTY_BAL_CUST_STMT>`, 1)
+	unknownDirection = strings.Replace(unknownDirection, "<DTKT>D</DTKT>", "<DTKT>X</DTKT>", 1)
+	badAmount := strings.Replace(row("D"), "<AMOUNT>12.34</AMOUNT>", "<AMOUNT>bad-amount</AMOUNT>", 1)
 	statement := `<SYTY_BAL_CUST_MAIN><ACC><SYTY_BAL_CUST_ACC><IBAN>BG00TEST</IBAN><CCY>EUR</CCY><STMT>` +
-		row("D") + row("C") + strings.Replace(row("D"), "<DTKT>D</DTKT>", "<DTKT>X</DTKT>", 1) +
+		row("D") + row("C") + unknownDirection + badAmount +
 		`</STMT></SYTY_BAL_CUST_ACC></ACC></SYTY_BAL_CUST_MAIN>`
+	logger, logs := testLogger()
+	server, err := NewServer(Dependencies{
+		Config: harness.server.deps.Config, Logger: logger, Clock: harness.clock,
+		Auth: harness.auth, App: harness.app, Imports: harness.server.deps.Imports,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.server = server
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	file, err := writer.CreateFormFile("file", "statement.xml")
@@ -94,8 +106,33 @@ func TestBankImportPreviewReportsBadRowsAsFailures(t *testing.T) {
 	if len(response.Data.Entries) != 2 {
 		t.Fatalf("entries = %d, want the 2 valid rows", len(response.Data.Entries))
 	}
-	if len(response.Data.Failures) != 1 || response.Data.Failures[0].RowIndex != 2 || response.Data.Failures[0].Reason != "debit/credit indicator is unknown" {
+	if len(response.Data.Failures) != 2 || response.Data.Failures[0].RowIndex != 2 || response.Data.Failures[0].Reason != "debit/credit indicator is unknown" || response.Data.Failures[1].RowIndex != 3 || response.Data.Failures[1].Reason != "amount is unparseable" {
 		t.Fatalf("failures = %+v", response.Data.Failures)
+	}
+	if response.Data.Failures[0].Direction != nil || response.Data.Failures[0].AmountMinor == nil || *response.Data.Failures[0].AmountMinor != 1234 || response.Data.Failures[0].Merchant == nil || *response.Data.Failures[0].Merchant != "PRIVATE-FAILURE-MERCHANT" || response.Data.Failures[0].BookedDate == nil || response.Data.Failures[0].ValueDate == nil {
+		t.Errorf("unknown-direction failure details = %+v", response.Data.Failures[0])
+	}
+	if response.Data.Failures[1].Direction == nil || *response.Data.Failures[1].Direction != "DEBIT" || response.Data.Failures[1].AmountMinor != nil || response.Data.Failures[1].BookedDate == nil || response.Data.Failures[1].ValueDate == nil {
+		t.Errorf("bad-amount failure details = %+v", response.Data.Failures[1])
+	}
+	var wire struct {
+		Data struct {
+			Failures []map[string]json.RawMessage `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &wire); err != nil {
+		t.Fatalf("decode raw failure payload: %v", err)
+	}
+	for _, field := range []string{"external_id", "booked_date", "value_date", "direction", "amount_minor", "currency", "merchant", "description", "reference", "transaction_code"} {
+		if _, ok := wire.Data.Failures[0][field]; !ok {
+			t.Errorf("failure JSON omits %q: %s", field, recorder.Body.String())
+		}
+	}
+	if string(wire.Data.Failures[0]["direction"]) != "null" || string(wire.Data.Failures[1]["amount_minor"]) != "null" {
+		t.Errorf("nullable details are not explicit nulls: %s", recorder.Body.String())
+	}
+	if strings.Contains(logs.String(), "PRIVATE-FAILURE-MERCHANT") || strings.Contains(logs.String(), "PRIVATE-FAILURE-REFERENCE") {
+		t.Errorf("request logs contain failure row details: %s", logs.String())
 	}
 }
 
@@ -179,8 +216,11 @@ func TestBankImportCommitCurrencyMismatchAndUnknownFormat(t *testing.T) {
 	}
 	var result DataResponse[bankImportCommitDTO]
 	decodeResponse(t, response, &result)
-	if result.Data.Batch.RowsFailed != 3 || result.Data.Batch.RowsImported != 0 || len(result.Data.Failures) != 3 || result.Data.Failures[0].Reason != "currency EUR does not match household currency" {
+	if result.Data.Batch.RowsFailed != 3 || result.Data.Batch.RowsImported != 0 || len(result.Data.Failures) != 3 || result.Data.Failures[0].Reason != "currency does not match household currency" {
 		t.Fatalf("currency mismatch result = %+v", result.Data)
+	}
+	if result.Data.Failures[0].ExternalID == nil || result.Data.Failures[0].BookedDate == nil || result.Data.Failures[0].ValueDate == nil || result.Data.Failures[0].Direction == nil || result.Data.Failures[0].AmountMinor == nil || result.Data.Failures[0].Currency == nil {
+		t.Errorf("commit failure omitted parsed row details: %+v", result.Data.Failures[0])
 	}
 	suggestions := harness.do(t, http.MethodGet, "/api/v1/households/"+household.ID+"/suggestions", "", nil)
 	if suggestions.Code != http.StatusOK || !strings.Contains(suggestions.Body.String(), `"items":[]`) {

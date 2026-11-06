@@ -44,12 +44,15 @@ else imports unless a fatal structural problem invalidates the statement.
 Each parsed entry shows its booked date and value date, direction, amount,
 merchant, description, reference, transaction code and running balance.
 
-The preview also returns a `failures` list. `row_index` is the 0-based index in
-the raw statement row sequence (skipped rows included), so parser failures and
-validation failures (currency mismatch, bad date, non-positive amount) share
-one numbering and can be matched against the source file. `AC_ENTRY_SR_NO` is
-not required: rows without it import using a content-based fallback
-fingerprint.
+The preview also returns a `failures` list. Each failure includes a safe reason
+and every field that parsed from that row, so it can be recreated manually via
+the manual suggestion flow. Unparsed fields are `null`. `row_index` is the
+0-based index in the raw statement row sequence (skipped rows included), so
+parser failures and validation failures (currency mismatch, bad date,
+non-positive amount) share one numbering and can be matched against the source
+file. Failure row details are returned only in the authenticated response;
+nothing is stored beyond the batch counters. `AC_ENTRY_SR_NO` is not required:
+rows without it import using a content-based fallback fingerprint.
 
 ## Commit and deduplication
 
@@ -89,9 +92,10 @@ or wait for future transfer matching.
 - Logs do not contain statement contents or customer data.
 - Rows whose currency differs from the household currency fail with a per-row
   reason. One bad row never aborts a statement: the response `failures` list
-  names the rejected raw rows and valid rows still import. Batch `rows_total`
-  counts parsed entries plus parser-rejected rows, and `rows_failed` counts
-  both kinds of failure.
+  includes each reason and the row data parsed so users can recreate rejected
+  rows manually; failure details are not stored beyond the batch counters.
+  Valid rows still import. Batch `rows_total` counts parsed entries plus
+  parser-rejected rows, and `rows_failed` counts both kinds of failure.
 
 ## Troubleshooting
 

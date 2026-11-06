@@ -3470,7 +3470,8 @@ components:
           $ref: '#/components/schemas/Timestamp'
     BankImportFailure:
       type: object
-      required: [row_index, reason]
+      description: Failure rows carry whatever of the row parsed, so users can recreate them manually; also included in statement previews.
+      required: [row_index, reason, external_id, booked_date, value_date, direction, amount_minor, currency, merchant, description, reference, transaction_code]
       properties:
         row_index:
           type: integer
@@ -3482,6 +3483,41 @@ components:
         reason:
           type: string
           description: Safe, value-free description of the rejection; never contains statement contents.
+        external_id:
+          type: string
+          nullable: true
+        booked_date:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        value_date:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveDate'
+          nullable: true
+        direction:
+          type: string
+          enum: [DEBIT, CREDIT]
+          nullable: true
+        amount_minor:
+          allOf:
+            - $ref: '#/components/schemas/MinorUnits'
+          nullable: true
+        currency:
+          allOf:
+            - $ref: '#/components/schemas/CurrencyCode'
+          nullable: true
+        merchant:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        reference:
+          type: string
+          nullable: true
+        transaction_code:
+          type: string
+          nullable: true
     BankImportCommitResponse:
       type: object
       required: [data]
