@@ -65,14 +65,22 @@ func TestImportCommitDeduplicatesAndPreservesCancelledSuggestion(t *testing.T) {
 }
 
 func TestImportCommitRejectsCurrencyMismatchWithoutSuggestion(t *testing.T) {
-	entry := imports.Entry{ExternalID: "bad-currency", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "EUR"}
+	entry := imports.Entry{
+		ExternalID: "bad-currency", BookedDate: importTestDate(2), ValueDate: importTestDate(1),
+		Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "EUR", Merchant: "Sample Shop",
+		Description: "Purchase", Reference: "REF-1", TransactionCode: "POS",
+	}
 	service, store, actor, household, account := newImportTestService(t, imports.Statement{Bank: "fibank", Format: "xml", Entries: []imports.Entry{entry}})
 	result, err := service.Commit(context.Background(), actor, household, account, "statement.xml", []byte("data"))
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if result.Batch.RowsTotal != 1 || result.Batch.RowsFailed != 1 || result.Batch.RowsImported != 0 || len(result.Failures) != 1 || result.Failures[0].RowIndex != 0 || result.Failures[0].Reason != "currency EUR does not match household currency" {
+	if result.Batch.RowsTotal != 1 || result.Batch.RowsFailed != 1 || result.Batch.RowsImported != 0 || len(result.Failures) != 1 || result.Failures[0].RowIndex != 0 || result.Failures[0].Reason != "currency does not match household currency" {
 		t.Fatalf("result = %+v", result)
+	}
+	failure := result.Failures[0]
+	if failure.ExternalID == nil || *failure.ExternalID != "bad-currency" || failure.BookedDate == nil || !failure.BookedDate.Equal(entry.BookedDate) || failure.ValueDate == nil || !failure.ValueDate.Equal(entry.ValueDate) || failure.Direction != entry.Direction || failure.AmountMinor == nil || *failure.AmountMinor != entry.AmountMinor || failure.Currency != entry.Currency || failure.Merchant != entry.Merchant || failure.Description != entry.Description || failure.Reference != entry.Reference || failure.TransactionCode != entry.TransactionCode {
+		t.Errorf("currency mismatch failure details = %+v, want full entry details", failure)
 	}
 	if got := len(store.suggestions.all()); got != 0 {
 		t.Fatalf("suggestion count = %d, want 0", got)
@@ -139,16 +147,20 @@ func TestImportCommitMergesParserAndValidationFailures(t *testing.T) {
 	}
 	want := []ImportFailure{
 		{RowIndex: 2, Reason: "amount is unparseable"},
-		{RowIndex: 3, Reason: "currency EUR does not match household currency"},
+		{RowIndex: 3, Reason: "currency does not match household currency"},
 		{RowIndex: 4, Reason: "debit/credit indicator is unknown"},
 	}
 	if len(result.Failures) != len(want) {
 		t.Fatalf("failures = %+v, want %+v", result.Failures, want)
 	}
 	for i, failure := range result.Failures {
-		if failure != want[i] {
-			t.Errorf("failure %d = %+v, want %+v", i, failure, want[i])
+		if failure.RowIndex != want[i].RowIndex || failure.Reason != want[i].Reason {
+			t.Errorf("failure %d = %+v, want row/reason %+v", i, failure, want[i])
 		}
+	}
+	validationFailure := result.Failures[1]
+	if validationFailure.ExternalID == nil || *validationFailure.ExternalID != "bad" || validationFailure.BookedDate == nil || !validationFailure.BookedDate.Equal(entries[1].BookedDate) || validationFailure.ValueDate == nil || !validationFailure.ValueDate.Equal(entries[1].ValueDate) || validationFailure.Direction != entries[1].Direction || validationFailure.AmountMinor == nil || *validationFailure.AmountMinor != entries[1].AmountMinor || validationFailure.Currency != entries[1].Currency {
+		t.Errorf("validation failure details = %+v, want parsed entry details", validationFailure)
 	}
 }
 
@@ -167,10 +179,13 @@ func TestImportPreviewExposesMergedFailures(t *testing.T) {
 	}
 	want := []ImportFailure{
 		{RowIndex: 0, Reason: "transaction type is unknown"},
-		{RowIndex: 1, Reason: "currency EUR does not match household currency"},
+		{RowIndex: 1, Reason: "currency does not match household currency"},
 	}
-	if len(preview.Failures) != len(want) || preview.Failures[0] != want[0] || preview.Failures[1] != want[1] {
+	if len(preview.Failures) != len(want) || preview.Failures[0].RowIndex != want[0].RowIndex || preview.Failures[0].Reason != want[0].Reason || preview.Failures[1].RowIndex != want[1].RowIndex || preview.Failures[1].Reason != want[1].Reason {
 		t.Fatalf("preview failures = %+v, want %+v", preview.Failures, want)
+	}
+	if preview.Failures[1].ExternalID == nil || *preview.Failures[1].ExternalID != entry.ExternalID || preview.Failures[1].BookedDate == nil || !preview.Failures[1].BookedDate.Equal(entry.BookedDate) || preview.Failures[1].AmountMinor == nil || *preview.Failures[1].AmountMinor != entry.AmountMinor {
+		t.Errorf("preview validation failure details = %+v, want parsed entry details", preview.Failures[1])
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -45,13 +44,25 @@ func NewImportService(uow ports.UnitOfWork, parser StatementParser, ids ports.ID
 	return &ImportService{uow: uow, parser: parser, ids: ids, clock: clock}, nil
 }
 
-// ImportFailure describes a parsed row rejected without persisting its details.
-// RowIndex is the 0-based index of the row in the raw statement row sequence
-// (including rows the parser skipped), shared with imports.ParseFailure so
-// parser failures and validation failures sort in one numbering.
+// ImportFailure describes a rejected row without persisting its details. The
+// row details are returned only to the authenticated household in HTTP
+// responses, so it can recreate the row; they are never logged. RowIndex is
+// the 0-based index of the row in the raw statement row sequence (including
+// rows the parser skipped), shared with imports.ParseFailure so parser
+// failures and validation failures sort in one numbering.
 type ImportFailure struct {
-	RowIndex int
-	Reason   string
+	RowIndex        int
+	Reason          string
+	ExternalID      *string
+	BookedDate      *time.Time
+	ValueDate       *time.Time
+	Direction       imports.Direction
+	AmountMinor     *int64
+	Currency        string
+	Merchant        string
+	Description     string
+	Reference       string
+	TransactionCode string
 }
 
 // ImportPreview is the stateless preview of one uploaded statement. Failures
@@ -67,7 +78,14 @@ type ImportPreview struct {
 func mergeImportFailures(statement imports.Statement, validation []ImportFailure) []ImportFailure {
 	failures := make([]ImportFailure, 0, len(statement.Failures)+len(validation))
 	for _, failure := range statement.Failures {
-		failures = append(failures, ImportFailure{RowIndex: failure.RowIndex, Reason: failure.Reason})
+		failures = append(failures, ImportFailure{
+			RowIndex: failure.RowIndex, Reason: failure.Reason,
+			ExternalID: clonePointer(failure.ExternalID), BookedDate: clonePointer(failure.BookedDate),
+			ValueDate: clonePointer(failure.ValueDate), Direction: failure.Direction,
+			AmountMinor: clonePointer(failure.AmountMinor), Currency: failure.Currency,
+			Merchant: failure.Merchant, Description: failure.Description,
+			Reference: failure.Reference, TransactionCode: failure.TransactionCode,
+		})
 	}
 	failures = append(failures, validation...)
 	slices.SortStableFunc(failures, func(a, b ImportFailure) int { return a.RowIndex - b.RowIndex })
@@ -99,7 +117,7 @@ func (s *ImportService) Preview(ctx context.Context, actor domain.UserId, househ
 	for _, entry := range statement.Entries {
 		effectiveDate := dateOnly(entry.BookedDate)
 		if reason := validateImportEntry(entry, householdRecord.Currency, effectiveDate, now); reason != "" {
-			validation = append(validation, ImportFailure{RowIndex: entry.RowIndex, Reason: reason})
+			validation = append(validation, importEntryFailure(entry, reason))
 		}
 	}
 	return ImportPreview{Statement: statement, Failures: mergeImportFailures(statement, validation)}, nil
@@ -160,7 +178,7 @@ func (s *ImportService) Commit(ctx context.Context, actor domain.UserId, househo
 		for _, entry := range statement.Entries {
 			effectiveDate := dateOnly(entry.BookedDate)
 			if reason := validateImportEntry(entry, householdRecord.Currency, effectiveDate, now); reason != "" {
-				validation = append(validation, ImportFailure{RowIndex: entry.RowIndex, Reason: reason})
+				validation = append(validation, importEntryFailure(entry, reason))
 				continue
 			}
 			fingerprint := imports.Fingerprint(statement.Bank, entry.ExternalID, entry)
@@ -258,7 +276,7 @@ func (s *ImportService) newID() (string, error) {
 
 func validateImportEntry(entry imports.Entry, householdCurrency domain.Currency, effectiveDate, now time.Time) string {
 	if entry.Currency != householdCurrency.Code() {
-		return fmt.Sprintf("currency %s does not match household currency", entry.Currency)
+		return "currency does not match household currency"
 	}
 	if entry.AmountMinor <= 0 || entry.AmountMinor > domain.MaxMinorUnits {
 		return "amount must be greater than zero and within the supported range"
@@ -270,6 +288,28 @@ func validateImportEntry(entry imports.Entry, householdCurrency domain.Currency,
 		return "direction is invalid"
 	}
 	return ""
+}
+
+func importEntryFailure(entry imports.Entry, reason string) ImportFailure {
+	bookedDate := entry.BookedDate
+	valueDate := entry.ValueDate
+	amount := entry.AmountMinor
+	externalID := entry.ExternalID
+	return ImportFailure{
+		RowIndex: entry.RowIndex, Reason: reason,
+		ExternalID: &externalID, BookedDate: &bookedDate, ValueDate: &valueDate,
+		Direction: entry.Direction, AmountMinor: &amount, Currency: entry.Currency,
+		Merchant: entry.Merchant, Description: entry.Description,
+		Reference: entry.Reference, TransactionCode: entry.TransactionCode,
+	}
+}
+
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func dateOnly(value time.Time) time.Time {

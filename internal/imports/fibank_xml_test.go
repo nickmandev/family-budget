@@ -134,6 +134,7 @@ func fibankStatement(rows ...string) string {
 
 func TestFibankParserCollectsRowFailuresWithoutAborting(t *testing.T) {
 	good := fibankRowXML("9001", "12.34", "D", "01/01/2026", "02/01/2026", "100.00")
+	good = strings.Replace(good, `</SYTY_BAL_CUST_STMT>`, `<TRNAME>Sample Merchant</TRNAME><REFERENCE>REF-9001</REFERENCE><TRN_CODE>ATM</TRN_CODE></SYTY_BAL_CUST_STMT>`, 1)
 	unknownDirection := strings.Replace(good, "<DTKT>D</DTKT>", "<DTKT>X</DTKT>", 1)
 	badAmount := strings.Replace(good, "<AMOUNT>12.34</AMOUNT>", "<AMOUNT>abc</AMOUNT>", 1)
 	statement := fibankStatement(good, good, good, unknownDirection, badAmount)
@@ -151,8 +152,16 @@ func TestFibankParserCollectsRowFailuresWithoutAborting(t *testing.T) {
 	if parsed.Failures[0].RowIndex != 3 || parsed.Failures[0].Reason != "debit/credit indicator is unknown" {
 		t.Errorf("failure 0 = %+v", parsed.Failures[0])
 	}
+	unknown := parsed.Failures[0]
+	if unknown.Direction != "" || unknown.AmountMinor == nil || *unknown.AmountMinor != 1234 || unknown.BookedDate == nil || !unknown.BookedDate.Equal(utcDate(2026, time.January, 2)) || unknown.ValueDate == nil || !unknown.ValueDate.Equal(utcDate(2026, time.January, 1)) || unknown.Merchant != "Sample Merchant" {
+		t.Errorf("unknown-direction failure details = %+v", unknown)
+	}
 	if parsed.Failures[1].RowIndex != 4 || parsed.Failures[1].Reason != "amount is unparseable" {
 		t.Errorf("failure 1 = %+v", parsed.Failures[1])
+	}
+	badAmountFailure := parsed.Failures[1]
+	if badAmountFailure.Direction != DirectionDebit || badAmountFailure.AmountMinor != nil || badAmountFailure.BookedDate == nil || badAmountFailure.ValueDate == nil || badAmountFailure.Merchant != "Sample Merchant" {
+		t.Errorf("bad-amount failure details = %+v", badAmountFailure)
 	}
 	for _, failure := range parsed.Failures {
 		for _, leak := range []string{"9001", "12.34", "BG00TEST", "100.00", "01/01/2026", "abc"} {
@@ -267,6 +276,17 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	for _, failure := range parsed.Failures {
 		if reason, ok := want[failure.RowIndex]; !ok || reason != failure.Reason {
 			t.Errorf("failure = %+v, want row in %v", failure, want)
+		}
+		if failure.RowIndex == 6 || failure.RowIndex == 7 {
+			if failure.AmountMinor == nil || *failure.AmountMinor != 1234 {
+				t.Errorf("bad-date row %d amount = %v, want parsed 1234", failure.RowIndex, failure.AmountMinor)
+			}
+		}
+		if failure.RowIndex == 6 && (failure.BookedDate != nil || failure.ValueDate == nil) {
+			t.Errorf("bad-booked-date row detail dates = %v / %v, want nil / parsed", failure.BookedDate, failure.ValueDate)
+		}
+		if failure.RowIndex == 7 && (failure.BookedDate == nil || failure.ValueDate != nil) {
+			t.Errorf("bad-value-date row detail dates = %v / %v, want parsed / nil", failure.BookedDate, failure.ValueDate)
 		}
 	}
 }
