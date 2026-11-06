@@ -16,19 +16,18 @@ The parser skips opening and closing balance rows and turnover-total rows
 (`TRN_TYPE` `OP`, `CL`, `DT` or `CT`). It ignores customer and other PII blocks
 (`ROWSET`).
 
-Row handling is deliberately three-tiered:
+Row handling follows this matrix:
 
-- **Skipped rows** (not failures): balance/total rows, rows with an empty
-  `DTKT`, and zero-amount transaction rows. They increment `skipped_rows`.
-- **Row failures** (reported, non-fatal): a row with an unknown `TRN_TYPE`,
-  an unknown `DTKT` value, an unparseable `AMOUNT`, date or balance, or an
-  invalid closing-balance row. The row is rejected, recorded in `failures`
-  with its 0-based raw-row index and a safe, value-free reason, and the rest
-  of the statement still imports.
-- **Fatal structural problems**: malformed XML, doctype/entity declarations,
-  excessive nesting, a wrong or missing account block, an invalid document-
-  level balance or period, or more than 20000 raw rows. These return `400`
-  with the reason in the message.
+| Outcome | Row rules |
+|---------|-----------|
+| **Skipped** (not failures; increments `skipped_rows`) | `TRN_TYPE` is `OP`, `CL`, `DT` or `CT`; `DTKT` is empty; or the parsed amount is zero. |
+| **Failure** (reported, non-fatal) | Bad direction (a non-empty `DTKT` other than `D` or `C`), bad amount (unparseable or negative), bad booked/value dates, or an invalid closing-balance row. The row is rejected, recorded in `failures` with its 0-based raw-row index and a safe, value-free reason. |
+| **Imported** | Everything else. Unknown transaction types and missing counterparties are imported; the merchant may show as `Unknown` in the suggestion. An unparseable running `AC_BAL` does not reject the row: it imports without a running balance. |
+| **Fatal structural problem** | Malformed XML, doctype/entity declarations, excessive nesting, a wrong or missing account block, an invalid document-level balance or period, or more than 20000 raw rows. These return `400` with the reason in the message. |
+
+In short: skipped = `OP|CL|DT|CT`, empty `DTKT` or zero amount; failure = bad
+direction, bad amount, bad dates or an invalid closing-balance row; everything
+else imports unless a fatal structural problem invalidates the statement.
 
 ## Import a statement
 

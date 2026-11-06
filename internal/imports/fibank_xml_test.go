@@ -178,18 +178,25 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(parsed.Entries) != 2 || parsed.Entries[0].RowIndex != 0 || parsed.Entries[1].RowIndex != 1 {
-		t.Errorf("entries = %+v, want rows 0 and 1", parsed.Entries)
+	if len(parsed.Entries) != 4 {
+		t.Fatalf("entries = %+v, want rows 0, 1, 4 and 8", parsed.Entries)
+	}
+	if parsed.Entries[0].RowIndex != 0 || parsed.Entries[1].RowIndex != 1 || parsed.Entries[2].RowIndex != 4 || parsed.Entries[3].RowIndex != 8 {
+		t.Errorf("entry rows = %d, %d, %d, %d; want 0, 1, 4 and 8", parsed.Entries[0].RowIndex, parsed.Entries[1].RowIndex, parsed.Entries[2].RowIndex, parsed.Entries[3].RowIndex)
 	}
 	if parsed.SkippedRows != 2 {
 		t.Errorf("SkippedRows = %d, want 2", parsed.SkippedRows)
 	}
+	if parsed.Entries[2].Direction != DirectionDebit || parsed.Entries[2].AmountMinor != 1234 {
+		t.Errorf("unknown transaction type entry = %+v, want debit 1234", parsed.Entries[2])
+	}
+	if parsed.Entries[3].BalanceAfterMinor != nil {
+		t.Errorf("unparseable balance = %v, want nil", parsed.Entries[3].BalanceAfterMinor)
+	}
 	want := map[int]string{
-		4: "transaction type is unknown",
 		5: "amount is unparseable",
 		6: "booked date is unparseable",
 		7: "value date is unparseable",
-		8: "balance is unparseable",
 	}
 	if len(parsed.Failures) != len(want) {
 		t.Fatalf("failures = %+v, want %d", parsed.Failures, len(want))
@@ -198,6 +205,24 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 		if reason, ok := want[failure.RowIndex]; !ok || reason != failure.Reason {
 			t.Errorf("failure = %+v, want row in %v", failure, want)
 		}
+	}
+}
+
+func TestFibankParserImportsSparseInternalPaymentRow(t *testing.T) {
+	row := `<SYTY_BAL_CUST_STMT><TRN_TYPE>IP</TRN_TYPE><VALUE_DT>01/01/2026</VALUE_DT><DATE_TIME>02/01/2026</DATE_TIME><AMOUNT>12.34</AMOUNT><DTKT>D</DTKT></SYTY_BAL_CUST_STMT>`
+	parsed, err := NewFibankParser().Parse([]byte(fibankStatement(row)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(parsed.Entries) != 1 || len(parsed.Failures) != 0 {
+		t.Fatalf("entries/failures = %+v / %+v, want one entry and no failures", parsed.Entries, parsed.Failures)
+	}
+	entry := parsed.Entries[0]
+	if entry.Direction != DirectionDebit || entry.AmountMinor != 1234 {
+		t.Errorf("entry direction/amount = %s / %d, want debit / 1234", entry.Direction, entry.AmountMinor)
+	}
+	if entry.Merchant != "" || entry.Description != "" {
+		t.Errorf("entry merchant/description = %q / %q, want empty", entry.Merchant, entry.Description)
 	}
 }
 
