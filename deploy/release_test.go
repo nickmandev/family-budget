@@ -21,8 +21,7 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 	workflow := readDeployFile(t, ".github/workflows/release-images.yml")
 	for _, want := range []string{
 		"tags: [\"v*\"]",
-		"workflow_call:",
-		"inputs.tag || github.ref_name",
+		`TAG="$GITHUB_REF_NAME"`,
 		"uses: ./.github/workflows/test.yml",
 		"needs: test",
 		"packages: write",
@@ -34,6 +33,9 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("release workflow does not contain %q", want)
 		}
+	}
+	if strings.Contains(workflow, "workflow_call:") {
+		t.Error("release image workflow must only publish from pushed tags")
 	}
 	testWorkflow := readDeployFile(t, ".github/workflows/test.yml")
 	for _, want := range []string{"workflow_call:", "  test:"} {
@@ -48,51 +50,32 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 	}
 }
 
-func TestReleaseNotesWorkflowRunsAfterImages(t *testing.T) {
-	workflow := readDeployFile(t, ".github/workflows/release-notes.yml")
+func TestReleaseDrafterNeverPublishes(t *testing.T) {
+	workflow := readDeployFile(t, ".github/workflows/release-drafter.yml")
 	for _, want := range []string{
-		"workflow_run:",
-		"workflow_call:",
-		"workflows: [\"Release images\"]",
-		"types: [completed]",
-		"github.event_name != 'workflow_run'",
-		"conclusion == 'success'",
-		"inputs.tag || github.event.workflow_run.head_branch",
-		"contents: write",
-		"releases/generate-notes",
-		"gh release create",
-		"gh release edit",
-		"head_branch",
-	} {
-		if !strings.Contains(workflow, want) {
-			t.Errorf("release notes workflow does not contain %q", want)
-		}
-	}
-	for _, forbidden := range []string{"HETZNER_", "scp ", "ssh ", "deploy-release.sh"} {
-		if strings.Contains(workflow, forbidden) {
-			t.Errorf("release notes workflow contains direct VPS deployment detail %q", forbidden)
-		}
-	}
-}
-
-func TestReleasePlanWorkflowDerivesVersionFromCommits(t *testing.T) {
-	workflow := readDeployFile(t, ".github/workflows/release-plan.yml")
-	for _, want := range []string{
+		"push:",
+		"branches: [main]",
+		"workflow_dispatch:",
 		"scripts/next-version.sh",
-		"workflow_call",
-		"uses: ./.github/workflows/release-images.yml",
-		"uses: ./.github/workflows/release-notes.yml",
-		"should_release",
+		"gh release create \"$TAG\" --draft",
 		"contents: write",
-		"tag: ${{ needs.plan.outputs.tag }}",
 	} {
 		if !strings.Contains(workflow, want) {
-			t.Errorf("release plan workflow does not contain %q", want)
+			t.Errorf("release drafter does not contain %q", want)
 		}
 	}
-	for _, forbidden := range []string{"HETZNER_", "scp ", "ssh ", "deploy-release.sh"} {
+	for _, forbidden := range []string{
+		"git push",
+		"--draft=false",
+		"gh release publish",
+		"release-images",
+		"HETZNER_",
+		"scp ",
+		"ssh ",
+		"deploy-release.sh",
+	} {
 		if strings.Contains(workflow, forbidden) {
-			t.Errorf("release plan workflow contains direct VPS deployment detail %q", forbidden)
+			t.Errorf("release drafter contains forbidden publication/deployment detail %q", forbidden)
 		}
 	}
 }

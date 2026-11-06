@@ -49,9 +49,8 @@ func TestNoUserSuppliedConnectionURLRemains(t *testing.T) {
 		filepath.Join("scripts", "integration-test.sh"),
 		filepath.Join("scripts", "next-version.sh"),
 		filepath.Join(".github", "workflows", "test.yml"),
-		filepath.Join(".github", "workflows", "release-plan.yml"),
+		filepath.Join(".github", "workflows", "release-drafter.yml"),
 		filepath.Join(".github", "workflows", "release-images.yml"),
-		filepath.Join(".github", "workflows", "release-notes.yml"),
 	}
 	for _, name := range files {
 		content := readRepoFile(t, name)

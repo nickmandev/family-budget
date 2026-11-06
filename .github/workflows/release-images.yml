@@ -3,12 +3,6 @@ name: Release images
 on:
   push:
     tags: ["v*"]
-  workflow_call:
-    inputs:
-      tag:
-        description: Release tag, e.g. v1.2.0
-        required: true
-        type: string
 
 concurrency:
   group: release-images-${{ github.ref }}
@@ -36,10 +30,9 @@ jobs:
       - name: Validate release tag and ancestry
         id: release
         shell: bash
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
           if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             echo "Release tags must use vMAJOR.MINOR.PATCH (for example v1.2.3). Got: $TAG" >&2
             exit 1
