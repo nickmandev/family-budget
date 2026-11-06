@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,22 +45,64 @@ func NewImportService(uow ports.UnitOfWork, parser StatementParser, ids ports.ID
 	return &ImportService{uow: uow, parser: parser, ids: ids, clock: clock}, nil
 }
 
-// Preview verifies household membership, then parses an in-memory statement.
-func (s *ImportService) Preview(ctx context.Context, actor domain.UserId, household domain.HouseholdId, filename string, data []byte) (imports.Statement, error) {
-	err := s.uow.WithinTransaction(ctx, func(ctx context.Context, repos ports.Repositories) error {
-		_, err := authorizeMember(ctx, repos, household, actor)
-		return err
-	})
-	if err != nil {
-		return imports.Statement{}, err
-	}
-	return s.parser.Parse(filename, data)
-}
-
 // ImportFailure describes a parsed row rejected without persisting its details.
+// RowIndex is the 0-based index of the row in the raw statement row sequence
+// (including rows the parser skipped), shared with imports.ParseFailure so
+// parser failures and validation failures sort in one numbering.
 type ImportFailure struct {
 	RowIndex int
 	Reason   string
+}
+
+// ImportPreview is the stateless preview of one uploaded statement. Failures
+// merge parser row failures with per-row validation (currency mismatch, bad
+// date, non-positive amount) using the same raw-row numbering.
+type ImportPreview struct {
+	Statement imports.Statement
+	Failures  []ImportFailure
+}
+
+// mergeImportFailures combines parser failures with validation failures and
+// keeps the merged list ordered by raw row index.
+func mergeImportFailures(statement imports.Statement, validation []ImportFailure) []ImportFailure {
+	failures := make([]ImportFailure, 0, len(statement.Failures)+len(validation))
+	for _, failure := range statement.Failures {
+		failures = append(failures, ImportFailure{RowIndex: failure.RowIndex, Reason: failure.Reason})
+	}
+	failures = append(failures, validation...)
+	slices.SortStableFunc(failures, func(a, b ImportFailure) int { return a.RowIndex - b.RowIndex })
+	return failures
+}
+
+// Preview verifies household membership, then parses an in-memory statement.
+// A statement with rejected rows still previews: the rejections come back as
+// failures instead of aborting the request.
+func (s *ImportService) Preview(ctx context.Context, actor domain.UserId, household domain.HouseholdId, filename string, data []byte) (ImportPreview, error) {
+	var householdRecord ports.HouseholdRecord
+	err := s.uow.WithinTransaction(ctx, func(ctx context.Context, repos ports.Repositories) error {
+		if _, err := authorizeMember(ctx, repos, household, actor); err != nil {
+			return err
+		}
+		var err error
+		householdRecord, err = repos.Households.Get(ctx, household)
+		return err
+	})
+	if err != nil {
+		return ImportPreview{}, err
+	}
+	statement, err := s.parser.Parse(filename, data)
+	if err != nil {
+		return ImportPreview{}, err
+	}
+	now := s.clock.Now().UTC()
+	validation := make([]ImportFailure, 0)
+	for _, entry := range statement.Entries {
+		effectiveDate := dateOnly(entry.BookedDate)
+		if reason := validateImportEntry(entry, householdRecord.Currency, effectiveDate, now); reason != "" {
+			validation = append(validation, ImportFailure{RowIndex: entry.RowIndex, Reason: reason})
+		}
+	}
+	return ImportPreview{Statement: statement, Failures: mergeImportFailures(statement, validation)}, nil
 }
 
 // ImportCommitResult is the durable result of committing one statement.
@@ -69,7 +112,9 @@ type ImportCommitResult struct {
 }
 
 // Commit persists an import batch and creates reviewable suggestions for its
-// valid, previously unseen rows in one transaction.
+// valid, previously unseen rows in one transaction. Rows rejected by the
+// parser are reported as failures and counted against the batch without
+// aborting the rest of the statement.
 func (s *ImportService) Commit(ctx context.Context, actor domain.UserId, household domain.HouseholdId, accountID domain.AccountId, filename string, data []byte) (ImportCommitResult, error) {
 	var result ImportCommitResult
 	err := s.uow.WithinTransaction(ctx, func(ctx context.Context, repos ports.Repositories) error {
@@ -103,21 +148,19 @@ func (s *ImportService) Commit(ctx context.Context, actor domain.UserId, househo
 			FileSHA256:  hex.EncodeToString(fileHash[:]),
 			PeriodFrom:  statement.PeriodFrom,
 			PeriodTo:    statement.PeriodTo,
-			RowsTotal:   len(statement.Entries),
+			RowsTotal:   len(statement.Entries) + len(statement.Failures),
 			CreatedBy:   actor,
 			CreatedAt:   now,
 		}
 		if err := repos.BankImports.CreateBatch(ctx, batch); err != nil {
 			return err
 		}
-		result.Failures = make([]ImportFailure, 0)
-		imported, duplicates, failed := 0, 0, 0
-		for index, entry := range statement.Entries {
+		validation := make([]ImportFailure, 0)
+		imported, duplicates := 0, 0
+		for _, entry := range statement.Entries {
 			effectiveDate := dateOnly(entry.BookedDate)
-			reason := validateImportEntry(entry, householdRecord.Currency, effectiveDate, now)
-			if reason != "" {
-				failed++
-				result.Failures = append(result.Failures, ImportFailure{RowIndex: index, Reason: reason})
+			if reason := validateImportEntry(entry, householdRecord.Currency, effectiveDate, now); reason != "" {
+				validation = append(validation, ImportFailure{RowIndex: entry.RowIndex, Reason: reason})
 				continue
 			}
 			fingerprint := imports.Fingerprint(statement.Bank, entry.ExternalID, entry)
@@ -171,6 +214,8 @@ func (s *ImportService) Commit(ctx context.Context, actor domain.UserId, househo
 			}
 			imported++
 		}
+		failed := len(statement.Failures) + len(validation)
+		result.Failures = mergeImportFailures(statement, validation)
 		if err := repos.BankImports.UpdateBatchCounts(ctx, household, batchID, imported, duplicates, failed); err != nil {
 			return err
 		}

@@ -4,17 +4,70 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/transform"
 )
 
+// maxFibankEntries caps the raw SYTY_BAL_CUST_STMT rows (entries, failures
+// and skipped rows combined) accepted from one statement.
 const maxFibankEntries = 20000
 
 var numericContragent = regexp.MustCompile(`^[A-Z]{3} [0-9]+$`)
+
+// errUnsupportedCharset marks a charset the Fibank decoder refuses. It is
+// internal: callers only see the safe "text encoding is not supported" reason.
+var errUnsupportedCharset = errors.New("unsupported charset")
+
+// newFibankDecoder builds a strict XML decoder that transcodes the charsets
+// Fibank exports actually use, because encoding/xml is UTF-8-only otherwise.
+func newFibankDecoder(data []byte) *xml.Decoder {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	decoder.Strict = true
+	decoder.CharsetReader = fibankCharsetReader
+	return decoder
+}
+
+func fibankCharsetReader(charset string, input io.Reader) (io.Reader, error) {
+	switch normalizeFibankCharset(charset) {
+	case "utf8":
+		return input, nil
+	case "windows1251", "cp1251":
+		return transform.NewReader(input, charmap.Windows1251.NewDecoder()), nil
+	case "windows1252", "cp1252":
+		return transform.NewReader(input, charmap.Windows1252.NewDecoder()), nil
+	case "iso88591", "latin1", "l1":
+		return transform.NewReader(input, charmap.ISO8859_1.NewDecoder()), nil
+	default:
+		return nil, errUnsupportedCharset
+	}
+}
+
+func normalizeFibankCharset(charset string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(charset)) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+// decodeError converts a decoder error into a fatal, reason-carrying parse
+// error without ever echoing file content into the reason.
+func decodeError(err error) error {
+	if errors.Is(err, errUnsupportedCharset) {
+		return invalidStatement("text encoding is not supported")
+	}
+	return invalidStatement("XML is malformed")
+}
 
 type fibankParser struct{}
 
@@ -65,8 +118,7 @@ func (fibankParser) Bank() string   { return "fibank" }
 func (fibankParser) Format() string { return "xml" }
 
 func (fibankParser) Detect(_ string, data []byte) bool {
-	decoder := xml.NewDecoder(bytes.NewReader(data))
-	decoder.Strict = true
+	decoder := newFibankDecoder(data)
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -80,11 +132,9 @@ func (fibankParser) Detect(_ string, data []byte) bool {
 
 func (fibankParser) Parse(data []byte) (Statement, error) {
 	if bytes.Contains(data, []byte("<!DOCTYPE")) || bytes.Contains(data, []byte("<!ENTITY")) {
-		return Statement{}, ErrInvalidStatement
+		return Statement{}, invalidStatement("doctype or entity declarations are not allowed")
 	}
-	decoder := xml.NewDecoder(bytes.NewReader(data))
-	decoder.Strict = true
-	var document fibankDocument
+	decoder := newFibankDecoder(data)
 	depth := 0
 	for {
 		token, err := decoder.Token()
@@ -92,22 +142,35 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			break
 		}
 		if err != nil {
-			return Statement{}, ErrInvalidStatement
+			return Statement{}, decodeError(err)
 		}
 		switch token.(type) {
 		case xml.StartElement:
 			depth++
 			if depth > 64 {
-				return Statement{}, ErrInvalidStatement
+				return Statement{}, invalidStatement("nesting deeper than 64 levels")
 			}
 		case xml.EndElement:
 			depth--
 		}
 	}
-	if err := xml.Unmarshal(data, &document); err != nil || document.XMLName.Local != "SYTY_BAL_CUST_MAIN" || len(document.Accounts.Accounts) != 1 {
-		return Statement{}, ErrInvalidStatement
+	var document fibankDocument
+	if err := newFibankDecoder(data).Decode(&document); err != nil {
+		return Statement{}, decodeError(err)
+	}
+	if document.XMLName.Local != "SYTY_BAL_CUST_MAIN" {
+		return Statement{}, invalidStatement("unexpected document root")
+	}
+	if len(document.Accounts.Accounts) == 0 {
+		return Statement{}, invalidStatement("no account block found")
+	}
+	if len(document.Accounts.Accounts) > 1 {
+		return Statement{}, invalidStatement("more than one account block found")
 	}
 	account := document.Accounts.Accounts[0]
+	if strings.TrimSpace(account.Currency) == "" {
+		return Statement{}, invalidStatement("account currency is missing")
+	}
 	statement := Statement{
 		Bank:     "fibank",
 		Format:   "xml",
@@ -115,41 +178,42 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		Currency: strings.TrimSpace(account.Currency),
 		Entries:  make([]Entry, 0),
 	}
-	if statement.Currency == "" {
-		return Statement{}, ErrInvalidStatement
-	}
 	if value := strings.TrimSpace(document.PeriodFrom); value != "" {
 		parsed, ok := parseFibankDate(value)
 		if !ok {
-			return Statement{}, ErrInvalidStatement
+			return Statement{}, invalidStatement("statement period start is invalid")
 		}
 		statement.PeriodFrom = &parsed
 	}
 	if value := strings.TrimSpace(document.PeriodTo); value != "" {
 		parsed, ok := parseFibankDate(value)
 		if !ok {
-			return Statement{}, ErrInvalidStatement
+			return Statement{}, invalidStatement("statement period end is invalid")
 		}
 		statement.PeriodTo = &parsed
 	}
 	if value := strings.TrimSpace(account.OpeningBalance); value != "" {
 		parsed, ok := parseSignedMinor(value)
 		if !ok {
-			return Statement{}, ErrInvalidStatement
+			return Statement{}, invalidStatement("opening balance is invalid")
 		}
 		statement.OpeningBalanceMinor = &parsed
 	}
+	if rows := len(account.StatementRows.Rows); rows > maxFibankEntries {
+		return Statement{}, invalidStatement(fmt.Sprintf("more than %d rows", maxFibankEntries))
+	}
 	closingRowFound := false
-	for _, row := range account.StatementRows.Rows {
+	for rowIndex, row := range account.StatementRows.Rows {
 		kind := strings.TrimSpace(row.Type)
 		if kind == "CL" {
 			if value := strings.TrimSpace(row.Amount); value != "" {
 				parsed, ok := parseSignedMinor(value)
 				if !ok {
-					return Statement{}, ErrInvalidStatement
+					statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "closing balance row is invalid"})
+				} else {
+					statement.ClosingBalanceMinor = &parsed
+					closingRowFound = true
 				}
-				statement.ClosingBalanceMinor = &parsed
-				closingRowFound = true
 			}
 		}
 		if kind == "OP" || kind == "CL" || kind == "DT" || kind == "CT" || strings.TrimSpace(row.Direction) == "" {
@@ -157,18 +221,17 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			continue
 		}
 		if kind != "DE" && kind != "CE" {
-			return Statement{}, ErrInvalidStatement
+			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "transaction type is unknown"})
+			continue
 		}
 		amount, ok := parseUnsignedMinor(row.Amount)
 		if !ok {
-			return Statement{}, ErrInvalidStatement
+			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "amount is unparseable"})
+			continue
 		}
 		if amount == 0 {
 			statement.SkippedRows++
 			continue
-		}
-		if len(statement.Entries) >= maxFibankEntries {
-			return Statement{}, ErrInvalidStatement
 		}
 		var direction Direction
 		switch strings.TrimSpace(row.Direction) {
@@ -177,14 +240,21 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		case "C":
 			direction = DirectionCredit
 		default:
-			return Statement{}, ErrInvalidStatement
+			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "debit/credit indicator is unknown"})
+			continue
 		}
 		bookedDate, bookedOK := parseFibankDate(row.BookedDate)
 		valueDate, valueOK := parseFibankDate(row.ValueDate)
-		if !bookedOK || !valueOK {
-			return Statement{}, ErrInvalidStatement
+		if !bookedOK {
+			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "booked date is unparseable"})
+			continue
+		}
+		if !valueOK {
+			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "value date is unparseable"})
+			continue
 		}
 		entry := Entry{
+			RowIndex:        rowIndex,
 			ExternalID:      strings.TrimSpace(row.EntryID),
 			BookedDate:      bookedDate,
 			ValueDate:       valueDate,
@@ -199,7 +269,8 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		if value := strings.TrimSpace(row.Balance); value != "" {
 			balance, ok := parseSignedMinor(value)
 			if !ok {
-				return Statement{}, ErrInvalidStatement
+				statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "balance is unparseable"})
+				continue
 			}
 			entry.BalanceAfterMinor = &balance
 		}
@@ -208,7 +279,7 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 	if !closingRowFound && strings.TrimSpace(account.CurrentBalance) != "" {
 		closing, ok := parseSignedMinor(account.CurrentBalance)
 		if !ok {
-			return Statement{}, ErrInvalidStatement
+			return Statement{}, invalidStatement("current balance is invalid")
 		}
 		statement.ClosingBalanceMinor = &closing
 	}

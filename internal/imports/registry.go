@@ -2,6 +2,7 @@ package imports
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -11,6 +12,27 @@ var (
 	// ErrInvalidStatement means a recognized statement could not be safely parsed.
 	ErrInvalidStatement = errors.New("invalid statement")
 )
+
+// invalidStatement builds a fatal parse error that carries a safe,
+// value-free reason alongside ErrInvalidStatement.
+func invalidStatement(reason string) error {
+	return fmt.Errorf("%w: %s", ErrInvalidStatement, reason)
+}
+
+// StatementReason returns the safe reason a parser attached to an
+// ErrInvalidStatement error, or "" when the error carries none. Reasons
+// never contain statement contents.
+func StatementReason(err error) string {
+	if err == nil || !errors.Is(err, ErrInvalidStatement) {
+		return ""
+	}
+	prefix := ErrInvalidStatement.Error() + ": "
+	message := err.Error()
+	if strings.HasPrefix(message, prefix) {
+		return message[len(prefix):]
+	}
+	return ""
+}
 
 // Registry dispatches statements to bank-specific parsers.
 type Registry struct {

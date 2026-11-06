@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"family-budget/internal/application"
 	"family-budget/internal/domain"
 	"family-budget/internal/imports"
 	"family-budget/internal/ports"
@@ -14,16 +15,17 @@ import (
 const bankImportBodyLimit = 10 << 20
 
 type statementDTO struct {
-	Bank                string              `json:"bank"`
-	Format              string              `json:"format"`
-	IBAN                string              `json:"iban"`
-	Currency            string              `json:"currency"`
-	PeriodFrom          *string             `json:"period_from"`
-	PeriodTo            *string             `json:"period_to"`
-	OpeningBalanceMinor *int64              `json:"opening_balance_minor"`
-	ClosingBalanceMinor *int64              `json:"closing_balance_minor"`
-	SkippedRows         int                 `json:"skipped_rows"`
-	Entries             []statementEntryDTO `json:"entries"`
+	Bank                string                 `json:"bank"`
+	Format              string                 `json:"format"`
+	IBAN                string                 `json:"iban"`
+	Currency            string                 `json:"currency"`
+	PeriodFrom          *string                `json:"period_from"`
+	PeriodTo            *string                `json:"period_to"`
+	OpeningBalanceMinor *int64                 `json:"opening_balance_minor"`
+	ClosingBalanceMinor *int64                 `json:"closing_balance_minor"`
+	SkippedRows         int                    `json:"skipped_rows"`
+	Entries             []statementEntryDTO    `json:"entries"`
+	Failures            []bankImportFailureDTO `json:"failures"`
 }
 
 type statementEntryDTO struct {
@@ -127,8 +129,7 @@ func (s *Server) handleBankImportCommit(w http.ResponseWriter, r *http.Request) 
 	}
 	result, err := s.deps.Imports.Commit(r.Context(), userID, household, accountID, header.Filename, data)
 	if err != nil {
-		if errors.Is(err, imports.ErrUnknownFormat) || errors.Is(err, imports.ErrInvalidStatement) {
-			writeError(w, r, newAPIError(http.StatusBadRequest, string(domain.CodeInvalidValue), "The statement file is invalid or unsupported."))
+		if writeStatementParseError(w, r, err) {
 			return
 		}
 		writeError(w, r, err)
@@ -141,6 +142,28 @@ func (s *Server) handleBankImportCommit(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, DataResponse[bankImportCommitDTO]{Data: bankImportCommitDTO{
 		Batch: toBankImportBatchDTO(result.Batch), Failures: failures,
 	}})
+}
+
+// writeStatementParseError maps statement parse errors to 4xx responses. The
+// invalid-statement message carries the parser's safe, value-free reason so a
+// 400 is diagnosable without logging statement contents.
+func writeStatementParseError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if errors.Is(err, imports.ErrUnknownFormat) {
+		writeError(w, r, newAPIError(http.StatusBadRequest, string(domain.CodeInvalidValue), "The statement file format is not supported."))
+		return true
+	}
+	if errors.Is(err, imports.ErrInvalidStatement) {
+		writeError(w, r, newAPIError(http.StatusBadRequest, string(domain.CodeInvalidValue), statementInvalidMessage(err)))
+		return true
+	}
+	return false
+}
+
+func statementInvalidMessage(err error) string {
+	if reason := imports.StatementReason(err); reason != "" {
+		return "The statement file is invalid: " + reason + "."
+	}
+	return "The statement file is invalid."
 }
 
 func (s *Server) handleBankImportList(w http.ResponseWriter, r *http.Request) {
@@ -220,23 +243,19 @@ func (s *Server) handleBankImportPreview(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, errBadRequest)
 		return
 	}
-	statement, err := s.deps.Imports.Preview(r.Context(), userID, household, header.Filename, data)
+	preview, err := s.deps.Imports.Preview(r.Context(), userID, household, header.Filename, data)
 	if err != nil {
-		if errors.Is(err, imports.ErrUnknownFormat) {
-			writeError(w, r, newAPIError(http.StatusBadRequest, string(domain.CodeInvalidValue), "The statement file format is not supported."))
-			return
-		}
-		if errors.Is(err, imports.ErrInvalidStatement) {
-			writeError(w, r, newAPIError(http.StatusBadRequest, string(domain.CodeInvalidValue), "The statement file is invalid."))
+		if writeStatementParseError(w, r, err) {
 			return
 		}
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, DataResponse[statementDTO]{Data: toStatementDTO(statement)})
+	writeJSON(w, http.StatusOK, DataResponse[statementDTO]{Data: toStatementDTO(preview)})
 }
 
-func toStatementDTO(statement imports.Statement) statementDTO {
+func toStatementDTO(preview application.ImportPreview) statementDTO {
+	statement := preview.Statement
 	entries := make([]statementEntryDTO, 0, len(statement.Entries))
 	for _, entry := range statement.Entries {
 		entries = append(entries, statementEntryDTO{
@@ -253,6 +272,10 @@ func toStatementDTO(statement imports.Statement) statementDTO {
 			BalanceAfterMinor: entry.BalanceAfterMinor,
 		})
 	}
+	failures := make([]bankImportFailureDTO, 0, len(preview.Failures))
+	for _, failure := range preview.Failures {
+		failures = append(failures, bankImportFailureDTO{RowIndex: failure.RowIndex, Reason: failure.Reason})
+	}
 	return statementDTO{
 		Bank:                statement.Bank,
 		Format:              statement.Format,
@@ -264,6 +287,7 @@ func toStatementDTO(statement imports.Statement) statementDTO {
 		ClosingBalanceMinor: statement.ClosingBalanceMinor,
 		SkippedRows:         statement.SkippedRows,
 		Entries:             entries,
+		Failures:            failures,
 	}
 }
 

@@ -3475,8 +3475,13 @@ components:
         row_index:
           type: integer
           minimum: 0
+          description: |
+            0-based index of the rejected row in the raw statement row
+            sequence, including rows that were skipped by design. Parser
+            failures and validation failures share this numbering.
         reason:
           type: string
+          description: Safe, value-free description of the rejection; never contains statement contents.
     BankImportCommitResponse:
       type: object
       required: [data]
@@ -3501,7 +3506,7 @@ components:
             $ref: '#/components/schemas/BankImport'
     StatementPreview:
       type: object
-      required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, entries]
+      required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, entries, failures]
       properties:
         bank:
           type: string
@@ -3536,6 +3541,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/StatementEntry'
+        failures:
+          type: array
+          description: |
+            Rows the parser or validation rejected. One rejected row never
+            blocks the rest of the statement; valid rows still appear in
+            `entries`.
+          items:
+            $ref: '#/components/schemas/BankImportFailure'
     StatementEntry:
       type: object
       required: [external_id, booked_date, value_date, direction, amount_minor, currency, merchant, description, reference, transaction_code, balance_after_minor]
