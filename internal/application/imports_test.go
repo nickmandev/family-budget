@@ -79,6 +79,25 @@ func TestImportCommitRejectsCurrencyMismatchWithoutSuggestion(t *testing.T) {
 	}
 }
 
+func TestImportCommitUsesUnknownMerchantForSparseEntry(t *testing.T) {
+	entry := imports.Entry{ExternalID: "sparse", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "USD"}
+	service, store, actor, household, account := newImportTestService(t, imports.Statement{Bank: "fibank", Format: "xml", Entries: []imports.Entry{entry}})
+	result, err := service.Commit(context.Background(), actor, household, account, "statement.xml", []byte("data"))
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if result.Batch.RowsImported != 1 || result.Batch.RowsFailed != 0 {
+		t.Fatalf("batch = %+v, want one imported row and no failures", result.Batch)
+	}
+	suggestions := store.suggestions.all()
+	if len(suggestions) != 1 {
+		t.Fatalf("suggestions = %d, want 1", len(suggestions))
+	}
+	if suggestions[0].Merchant() != "Unknown" {
+		t.Errorf("suggestion merchant = %q, want Unknown", suggestions[0].Merchant())
+	}
+}
+
 func TestImportCommitUsesStableFallbackFingerprintWithoutExternalID(t *testing.T) {
 	entry := imports.Entry{BookedDate: importTestDate(5), ValueDate: importTestDate(5), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "USD", Merchant: "  Corner   Shop ", Description: " Test  purchase ", Reference: "REF"}
 	service, store, actor, household, account := newImportTestService(t, imports.Statement{Bank: "fibank", Format: "xml", Entries: []imports.Entry{entry}})

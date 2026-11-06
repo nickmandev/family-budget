@@ -220,10 +220,6 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			statement.SkippedRows++
 			continue
 		}
-		if kind != "DE" && kind != "CE" {
-			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "transaction type is unknown"})
-			continue
-		}
 		amount, ok := parseUnsignedMinor(row.Amount)
 		if !ok {
 			statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "amount is unparseable"})
@@ -267,12 +263,9 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			TransactionCode: strings.TrimSpace(row.TransactionCode),
 		}
 		if value := strings.TrimSpace(row.Balance); value != "" {
-			balance, ok := parseSignedMinor(value)
-			if !ok {
-				statement.Failures = append(statement.Failures, ParseFailure{RowIndex: rowIndex, Reason: "balance is unparseable"})
-				continue
+			if balance, ok := parseSignedMinor(value); ok {
+				entry.BalanceAfterMinor = &balance
 			}
-			entry.BalanceAfterMinor = &balance
 		}
 		statement.Entries = append(statement.Entries, entry)
 	}
