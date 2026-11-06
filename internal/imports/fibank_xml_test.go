@@ -27,6 +27,16 @@ func TestFibankParserParsesSyntheticStatement(t *testing.T) {
 	if statement.SkippedRows != 5 {
 		t.Errorf("SkippedRows = %d, want 5", statement.SkippedRows)
 	}
+	wantSkips := []ParseSkip{
+		{RowIndex: 0, Reason: "opening balance row"},
+		{RowIndex: 1, Reason: "closing balance row"},
+		{RowIndex: 2, Reason: "debit turnover row"},
+		{RowIndex: 3, Reason: "credit turnover row"},
+		{RowIndex: 7, Reason: "zero-amount row"},
+	}
+	if !reflect.DeepEqual(statement.Skips, wantSkips) {
+		t.Errorf("Skips = %+v, want %+v", statement.Skips, wantSkips)
+	}
 	if len(statement.Entries) != 3 {
 		t.Fatalf("entries = %d, want 3", len(statement.Entries))
 	}
@@ -258,6 +268,13 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	}
 	if parsed.SkippedRows != 2 {
 		t.Errorf("SkippedRows = %d, want 2", parsed.SkippedRows)
+	}
+	wantSkips := []ParseSkip{
+		{RowIndex: 2, Reason: "row without debit/credit indicator"},
+		{RowIndex: 3, Reason: "zero-amount row"},
+	}
+	if !reflect.DeepEqual(parsed.Skips, wantSkips) {
+		t.Errorf("Skips = %+v, want %+v", parsed.Skips, wantSkips)
 	}
 	if parsed.Entries[2].Direction != DirectionDebit || parsed.Entries[2].AmountMinor != 1234 {
 		t.Errorf("unknown transaction type entry = %+v, want debit 1234", parsed.Entries[2])

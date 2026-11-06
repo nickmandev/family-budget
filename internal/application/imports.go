@@ -70,6 +70,7 @@ type ImportFailure struct {
 // date, non-positive amount) using the same raw-row numbering.
 type ImportPreview struct {
 	Statement imports.Statement
+	Skips     []imports.ParseSkip
 	Failures  []ImportFailure
 }
 
@@ -120,7 +121,7 @@ func (s *ImportService) Preview(ctx context.Context, actor domain.UserId, househ
 			validation = append(validation, importEntryFailure(entry, reason))
 		}
 	}
-	return ImportPreview{Statement: statement, Failures: mergeImportFailures(statement, validation)}, nil
+	return ImportPreview{Statement: statement, Skips: statement.Skips, Failures: mergeImportFailures(statement, validation)}, nil
 }
 
 // ImportCommitResult is the durable result of committing one statement.

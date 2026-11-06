@@ -24,8 +24,14 @@ type statementDTO struct {
 	OpeningBalanceMinor *int64                 `json:"opening_balance_minor"`
 	ClosingBalanceMinor *int64                 `json:"closing_balance_minor"`
 	SkippedRows         int                    `json:"skipped_rows"`
+	Skipped             []statementSkipDTO     `json:"skipped"`
 	Entries             []statementEntryDTO    `json:"entries"`
 	Failures            []bankImportFailureDTO `json:"failures"`
+}
+
+type statementSkipDTO struct {
+	RowIndex int    `json:"row_index"`
+	Reason   string `json:"reason"`
 }
 
 type statementEntryDTO struct {
@@ -286,6 +292,10 @@ func toStatementDTO(preview application.ImportPreview) statementDTO {
 	for _, failure := range preview.Failures {
 		failures = append(failures, toBankImportFailureDTO(failure))
 	}
+	skips := make([]statementSkipDTO, 0, len(preview.Skips))
+	for _, skip := range preview.Skips {
+		skips = append(skips, statementSkipDTO{RowIndex: skip.RowIndex, Reason: skip.Reason})
+	}
 	return statementDTO{
 		Bank:                statement.Bank,
 		Format:              statement.Format,
@@ -296,6 +306,7 @@ func toStatementDTO(preview application.ImportPreview) statementDTO {
 		OpeningBalanceMinor: statement.OpeningBalanceMinor,
 		ClosingBalanceMinor: statement.ClosingBalanceMinor,
 		SkippedRows:         statement.SkippedRows,
+		Skipped:             skips,
 		Entries:             entries,
 		Failures:            failures,
 	}

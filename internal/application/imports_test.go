@@ -168,7 +168,7 @@ func TestImportPreviewExposesMergedFailures(t *testing.T) {
 	entry := imports.Entry{RowIndex: 1, ExternalID: "e1", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "EUR"}
 	statement := imports.Statement{Bank: "fibank", Format: "xml", Entries: []imports.Entry{entry}, Failures: []imports.ParseFailure{
 		{RowIndex: 0, Reason: "transaction type is unknown"},
-	}}
+	}, Skips: []imports.ParseSkip{{RowIndex: 2, Reason: "zero-amount row"}}}
 	service, _, actor, household, _ := newImportTestService(t, statement)
 	preview, err := service.Preview(context.Background(), actor, household, "statement.xml", []byte("data"))
 	if err != nil {
@@ -176,6 +176,9 @@ func TestImportPreviewExposesMergedFailures(t *testing.T) {
 	}
 	if len(preview.Statement.Entries) != 1 {
 		t.Fatalf("preview entries = %d, want 1", len(preview.Statement.Entries))
+	}
+	if len(preview.Skips) != 1 || preview.Skips[0] != (imports.ParseSkip{RowIndex: 2, Reason: "zero-amount row"}) {
+		t.Fatalf("preview skips = %+v, want row 2 zero-amount row", preview.Skips)
 	}
 	want := []ImportFailure{
 		{RowIndex: 0, Reason: "transaction type is unknown"},

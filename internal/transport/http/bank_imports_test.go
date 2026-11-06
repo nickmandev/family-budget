@@ -45,6 +45,21 @@ func TestBankImportPreviewReturnsStatelessStatement(t *testing.T) {
 	if response.Data.Bank != "fibank" || response.Data.Format != "xml" || len(response.Data.Entries) != 3 || response.Data.SkippedRows != 5 {
 		t.Fatalf("preview response = %+v", response.Data)
 	}
+	wantSkips := []statementSkipDTO{
+		{RowIndex: 0, Reason: "opening balance row"},
+		{RowIndex: 1, Reason: "closing balance row"},
+		{RowIndex: 2, Reason: "debit turnover row"},
+		{RowIndex: 3, Reason: "credit turnover row"},
+		{RowIndex: 7, Reason: "zero-amount row"},
+	}
+	if len(response.Data.Skipped) != len(wantSkips) {
+		t.Fatalf("preview skipped rows = %+v, want %+v", response.Data.Skipped, wantSkips)
+	}
+	for index, skip := range response.Data.Skipped {
+		if skip != wantSkips[index] {
+			t.Errorf("preview skipped row %d = %+v, want %+v", index, skip, wantSkips[index])
+		}
+	}
 	// The sample is a EUR statement and the harness household is USD: preview
 	// exposes validation failures for every entry instead of aborting.
 	if len(response.Data.Failures) != 3 {
