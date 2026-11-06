@@ -21,7 +21,7 @@ Row handling follows this matrix:
 | Outcome | Row rules |
 |---------|-----------|
 | **Skipped** (not failures; increments `skipped_rows`) | `TRN_TYPE` is `OP`, `CL`, `DT` or `CT`; `DTKT` is empty; or the parsed amount is zero. |
-| **Failure** (reported, non-fatal) | Bad direction (a non-empty `DTKT` other than `D` or `C`), bad amount (unparseable or negative), bad booked/value dates, or an invalid closing-balance row. The row is rejected, recorded in `failures` with its 0-based raw-row index and a safe, value-free reason. |
+| **Failure** (reported, non-fatal) | Bad direction (a non-empty `DTKT` other than `D` or `C`), bad amount (unparseable or negative), bad booked/value dates, or an invalid closing-balance row. The row is rejected, recorded in `failures` with its 0-based raw-row index and a safe, value-free reason. Amounts may be emitted without a leading zero (`.27`); the plain-number decimal grammar is `27`, `27.5`, `27.55`, `.27`, `.5`; anything else fails per row without blocking the rest. |
 | **Imported** | Everything else. Unknown transaction types and missing counterparties are imported; the merchant may show as `Unknown` in the suggestion. An unparseable running `AC_BAL` does not reject the row: it imports without a running balance. |
 | **Fatal structural problem** | Malformed XML, doctype/entity declarations, excessive nesting, a wrong or missing account block, an invalid document-level balance or period, or more than 20000 raw rows. These return `400` with the reason in the message. |
 
