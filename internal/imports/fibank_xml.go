@@ -216,8 +216,24 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 				}
 			}
 		}
-		if kind == "OP" || kind == "CL" || kind == "DT" || kind == "CT" || strings.TrimSpace(row.Direction) == "" {
+		skipReason := ""
+		switch kind {
+		case "OP":
+			skipReason = "opening balance row"
+		case "CL":
+			skipReason = "closing balance row"
+		case "DT":
+			skipReason = "debit turnover row"
+		case "CT":
+			skipReason = "credit turnover row"
+		default:
+			if strings.TrimSpace(row.Direction) == "" {
+				skipReason = "row without debit/credit indicator"
+			}
+		}
+		if skipReason != "" {
 			statement.SkippedRows++
+			statement.Skips = append(statement.Skips, ParseSkip{RowIndex: rowIndex, Reason: skipReason})
 			continue
 		}
 		amount, ok := parseUnsignedMinor(row.Amount)
@@ -227,6 +243,7 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		}
 		if amount == 0 {
 			statement.SkippedRows++
+			statement.Skips = append(statement.Skips, ParseSkip{RowIndex: rowIndex, Reason: "zero-amount row"})
 			continue
 		}
 		var direction Direction

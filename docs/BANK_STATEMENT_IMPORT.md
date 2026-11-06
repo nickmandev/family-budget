@@ -13,8 +13,11 @@ exported from My Fibank. Fibank XLS is not supported; CSV and XLSX decoders are
 future work.
 
 The parser skips opening and closing balance rows and turnover-total rows
-(`TRN_TYPE` `OP`, `CL`, `DT` or `CT`). It ignores customer and other PII blocks
-(`ROWSET`).
+(`TRN_TYPE` `OP`, `CL`, `DT` or `CT`). The preview's `skipped` list now names
+each skipped row and why it was skipped; these categories include opening and
+closing balances, period turnover totals, rows without a debit/credit indicator,
+and zero-amount rows. These are non-movements, never money movements, and do not
+need to be recreated. It ignores customer and other PII blocks (`ROWSET`).
 
 Row handling follows this matrix:
 
@@ -36,7 +39,8 @@ else imports unless a fatal structural problem invalidates the statement.
    selected manually; IBANs are not stored on accounts.
 3. Upload the statement `.xml` file from the local device.
 4. Inspect the preview: bank, IBAN, period, currency, opening and closing
-   balances, entry count and skipped-row count.
+   balances, entry count, skipped-row count, and the listed skipped rows and
+   their categories.
 5. Select **Import** to create suggestions for review.
 
 ## Preview fields
@@ -53,6 +57,11 @@ non-positive amount) share one numbering and can be matched against the source
 file. Failure row details are returned only in the authenticated response;
 nothing is stored beyond the batch counters. `AC_ENTRY_SR_NO` is not required:
 rows without it import using a content-based fallback fingerprint.
+
+The preview's `skipped` list contains each intentionally ignored raw row's
+0-based `row_index` and safe `reason` category. It explains the `skipped_rows`
+count; skipped rows are balances, turnover totals, rows without a
+debit/credit indicator, or zero-amount rows, not money movements to recreate.
 
 ## Commit and deduplication
 

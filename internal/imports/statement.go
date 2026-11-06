@@ -52,6 +52,15 @@ type ParseFailure struct {
 	TransactionCode string
 }
 
+// ParseSkip records one intentionally ignored raw row: its 0-based raw row
+// index and the category it matched (for example, "opening balance row",
+// "closing balance row", "turnover row", "empty debit/credit indicator",
+// "zero-amount row").
+type ParseSkip struct {
+	RowIndex int
+	Reason   string
+}
+
 // Statement contains normalized account metadata and transactions only. Raw
 // customer records from statement files are deliberately not represented.
 type Statement struct {
@@ -65,6 +74,7 @@ type Statement struct {
 	ClosingBalanceMinor *int64
 	Entries             []Entry
 	SkippedRows         int
+	Skips               []ParseSkip
 	// Failures are rows the parser rejected. They never abort the statement;
 	// valid rows still parse.
 	Failures []ParseFailure

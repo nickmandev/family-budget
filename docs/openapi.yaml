@@ -3542,7 +3542,7 @@ components:
             $ref: '#/components/schemas/BankImport'
     StatementPreview:
       type: object
-      required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, entries, failures]
+      required: [bank, format, iban, currency, period_from, period_to, opening_balance_minor, closing_balance_minor, skipped_rows, skipped, entries, failures]
       properties:
         bank:
           type: string
@@ -3573,6 +3573,13 @@ components:
         skipped_rows:
           type: integer
           minimum: 0
+        skipped:
+          type: array
+          description: |
+            Rows intentionally ignored by the parser. Reasons are safe,
+            value-free categories; the list explains the `skipped_rows` count.
+          items:
+            $ref: '#/components/schemas/StatementSkip'
         entries:
           type: array
           items:
@@ -3585,6 +3592,17 @@ components:
             `entries`.
           items:
             $ref: '#/components/schemas/BankImportFailure'
+    StatementSkip:
+      type: object
+      required: [row_index, reason]
+      properties:
+        row_index:
+          type: integer
+          minimum: 0
+          description: 0-based index in the raw statement row sequence, including other skipped rows.
+        reason:
+          type: string
+          description: Safe, value-free category explaining why the row was intentionally ignored.
     StatementEntry:
       type: object
       required: [external_id, booked_date, value_date, direction, amount_minor, currency, merchant, description, reference, transaction_code, balance_after_minor]
