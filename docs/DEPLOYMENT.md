@@ -322,24 +322,34 @@ workflow and troubleshooting.
 ## Automated release deployment
 
 The reusable verification workflow in `.github/workflows/test.yml` runs the
-normal suite on pull requests and `main` pushes. Releases are cut automatically
-by `.github/workflows/release-plan.yml`: on every push to `main` it runs
-`scripts/next-version.sh`, which derives the next `vMAJOR.MINOR.PATCH` from the
-Conventional Commits since the newest release tag. `feat` bumps the minor,
-`fix` and `perf` bump the patch, and a `!` after the type or a
-`BREAKING CHANGE:`/`BREAKING-CHANGE:` footer bumps the major;
-`docs`/`chore`/`test`/`ci`/`refactor` commits (and merge commits) do not
-trigger a release. When at least one releasable commit exists, the plan
-workflow creates and pushes the tag, then drives
-`.github/workflows/release-images.yml` (verification through `test.yml` first,
-then the versioned API and migration images) and
-`.github/workflows/release-notes.yml` (GitHub Release with generated notes and
-GHCR image references) through `workflow_call`, so no personal access token or
-manual tag is required. Merging a `feat:`/`fix:`/`perf:`/breaking commit to
-`main` therefore releases — and the VPS timer then deploys — automatically.
-Re-running the release workflow updates the existing release. The VPS poller
-remains tag-based and unchanged. These GitHub workflows do **not** connect to
-the VPS or require a Hetzner SSH secret.
+normal suite on pull requests and `main` pushes. On every push to `main`,
+`.github/workflows/release-drafter.yml` recomputes the next relevant version
+from Conventional Commits and keeps exactly one **draft** release. `feat` bumps
+the minor version, `fix` and `perf` bump the patch, and `BREAKING CHANGE` or a
+`!` after the type bumps the major. `docs`/`chore`/`test`/`ci`/`refactor`
+commits (and merge commits) do not create or change drafts. Since v1.1.2 exists,
+the next draft will be v1.1.3 or later. Draft releases are informational only:
+they never create git tags.
+
+Publishing is a deliberate owner action. Press **Publish release** on the draft
+(or run `gh release edit vX.Y.Z --draft=false`) to publish it; GitHub creates
+the tag, which triggers `.github/workflows/release-images.yml`. That workflow
+runs the reusable test suite first, then publishes both GHCR images. The VPS
+release poller deploys as before, preserving its version checks, health checks
+and rollback order. No merge to `main` publishes images or deploys by itself.
+
+The manual tag path remains equivalent: tag a commit already on `main` and push
+the version tag to trigger the same image pipeline. Supply your own release
+notes, or publish a matching draft first.
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+If you want to ship under different numbering, or not ship anything, delete or
+rename the draft. Drafts are informational only and do not affect deployed
+versions until published or a tag is pushed.
 
 The VPS-side systemd timer polls the existing clone for new stable tags reachable
 from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
@@ -412,29 +422,23 @@ editing tracked Compose or script files on the VPS.
 
 ### Releasing
 
-Nothing to do for the normal path: the release plan workflow derives the next
-`vMAJOR.MINOR.PATCH` from the Conventional Commits merged to `main`
-(`feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE` or a `!` after the
-type → major; `docs`/`chore`/`test`/`ci`/`refactor` do not release), creates
-the tag on `main`, publishes the versioned images, and creates the GitHub
-Release with generated notes and GHCR references. The VPS poller picks the new
-tag up unchanged on its next timer run. A releasable merge to `main` therefore
-deploys automatically.
-
-A manual release still works and goes through the same image and release
-pipeline: tag a commit already on `main` and push the tag.
+Review the automatically maintained draft and publish it when you are ready to
+release. You can instead delete or rename it to use different numbering or
+skip the release. If you prefer the manual path, tag a commit already on `main`
+and push the tag:
 
 ```sh
-git tag -a v1.2.3 -m "Release v1.2.3"
+git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow maps `v1.2.3` to the GHCR image tag and the poller updates only
-`APP_VERSION` in the VPS `.env`. `.env.example` defaults it to `1.0.0` for
-existing installations. The deploy script restores the previous app version and
-restarts the prior image if pulling, migration, or readiness fails. It does **not**
-reverse a database migration. Use backward-compatible expand/contract migrations
-and never rely on automatic schema rollback.
+Either publication path triggers the tag-only image workflow: it verifies the
+tag points to `main`, runs tests, and publishes the versioned API and migration
+images. The poller updates only `APP_VERSION` in the VPS `.env` and restores the
+previous app version and restarts the prior image if pulling, migration, or
+readiness fails. It does **not** reverse a database migration. Use
+backward-compatible expand/contract migrations and never rely on automatic
+schema rollback.
 
 ### Release smoke check
 

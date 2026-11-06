@@ -1,0 +1,77 @@
+name: Release drafter
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch tags
+        run: git fetch origin --tags --prune
+      - name: Compute next version from conventional commits
+        id: plan
+        run: bash scripts/next-version.sh
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAG" ]]; then
+            echo "nothing to do"
+            exit 0
+          fi
+
+          is_draft=false
+          if release_state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$release_state" != "true" ]]; then
+              echo "$TAG is already released; nothing to do"
+              exit 0
+            fi
+            is_draft=true
+          fi
+
+          if ! body="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="$TAG" --jq .body)"; then
+            echo "GitHub note generation failed; building notes from releasable commits"
+            body=""
+            last_tag="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+            while IFS= read -r subject; do
+              [[ -n "$subject" ]] || continue
+              body+="- ${subject}"$'\n'
+            done < <(bash scripts/next-version.sh --commits-changed)
+            if [[ -n "$last_tag" ]]; then
+              compare_url="https://github.com/${GITHUB_REPOSITORY}/compare/${last_tag}...${TAG}"
+            else
+              compare_url="https://github.com/${GITHUB_REPOSITORY}/compare/HEAD...${TAG}"
+            fi
+            body+=$'\n**Full Changelog**: '"$compare_url"
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          images="$(printf 'Container images:\n- `ghcr.io/%s/family-budget-api:%s`\n- `ghcr.io/%s/family-budget-migrate:%s`' "$owner" "$VERSION" "$owner" "$VERSION")"
+          notes="${body}"$'\n\n'"${images}"
+
+          while IFS= read -r stale_tag; do
+            [[ -n "$stale_tag" && "$stale_tag" != "$TAG" ]] || continue
+            echo "Deleting stale draft $stale_tag"
+            gh release delete "$stale_tag" --yes
+          done < <(gh release list --json tagName,isDraft --limit 1000 --jq '.[] | select(.isDraft and (.tagName | startswith("v"))) | .tagName')
+
+          if [[ "$is_draft" == true ]]; then
+            gh release edit "$TAG" --draft --title "$TAG" --notes "$notes"
+            echo "draft updated $TAG"
+          else
+            gh release create "$TAG" --draft --target "$SHA" --title "$TAG" --notes "$notes"
+            echo "draft created $TAG"
+          fi

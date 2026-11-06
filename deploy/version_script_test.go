@@ -48,7 +48,7 @@ func newVersionRepo(t *testing.T) *versionRepo {
 	}
 	repo.git("init", "-q")
 	repo.git("config", "user.name", "Release Plan Tester")
-	repo.git("config", "user.email", "release-plan@example.com")
+	repo.git("config", "user.email", "version-test@example.com")
 	repo.git("config", "commit.gpgsign", "false")
 	return repo
 }

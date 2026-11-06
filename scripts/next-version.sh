@@ -13,6 +13,16 @@ emit() {
 }
 
 bump=0
+commits_changed=false
+
+if [[ "${1:-}" == "--commits-changed" ]]; then
+	commits_changed=true
+elif [[ $# -gt 0 ]]; then
+	printf 'Unknown option: %s\n' "$1" >&2
+	exit 2
+fi
+
+releasable_subjects=()
 
 # Conventional Commit subject patterns. Quoted variables keep bash's [[ =~ ]]
 # parser away from the regex parentheses.
@@ -34,6 +44,9 @@ classify() {
 	fi
 	if (( level > bump )); then
 		bump=$level
+	fi
+	if (( level > 0 )); then
+		releasable_subjects+=("$subject")
 	fi
 }
 
@@ -68,6 +81,11 @@ while IFS= read -r line; do
 		body+="$line"$'\n'
 	fi
 done < <(git log --format='%s%n%b%n--COMMIT--' "$range")
+
+if [[ "$commits_changed" == true ]]; then
+	printf '%s\n' "${releasable_subjects[@]}"
+	exit 0
+fi
 
 should_release=false
 version=""
