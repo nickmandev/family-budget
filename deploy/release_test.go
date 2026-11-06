@@ -29,10 +29,15 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 		"docker/build-push-action@v6",
 		"family-budget-api:",
 		"family-budget-migrate:",
+		"git fetch origin main",
+		"git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("release workflow does not contain %q", want)
 		}
+	}
+	if strings.Contains(workflow, "--depth=1") {
+		t.Error("release workflow must fetch full history for ancestry validation")
 	}
 	if strings.Contains(workflow, "workflow_call:") {
 		t.Error("release image workflow must only publish from pushed tags")
@@ -57,7 +62,8 @@ func TestReleaseDrafterNeverPublishes(t *testing.T) {
 		"branches: [main]",
 		"workflow_dispatch:",
 		"scripts/next-version.sh",
-		"gh release create \"$TAG\" --draft",
+		"gh release create \"$TAG\" --draft --target \"$SHA\"",
+		"gh release delete \"$TAG\" --yes",
 		"contents: write",
 	} {
 		if !strings.Contains(workflow, want) {
