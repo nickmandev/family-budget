@@ -13,6 +13,10 @@ const (
 
 // Entry is a normalized bank transaction. AmountMinor is always positive.
 type Entry struct {
+	// RowIndex is the 0-based index of the source row in the statement's raw
+	// row sequence (including skipped rows). It shares its numbering with
+	// ParseFailure so parser and application failures stay comparable.
+	RowIndex          int
 	ExternalID        string
 	BookedDate        time.Time
 	ValueDate         time.Time
@@ -24,6 +28,16 @@ type Entry struct {
 	Reference         string
 	TransactionCode   string
 	BalanceAfterMinor *int64
+}
+
+// ParseFailure records one rejected raw row. Reason is safe and value-free.
+// RowIndex is the 0-based index in the raw row sequence of the source
+// statement (for Fibank, the SYTY_BAL_CUST_STMT sequence, including skipped
+// rows), so parser failures and application validation failures share one
+// numbering.
+type ParseFailure struct {
+	RowIndex int
+	Reason   string
 }
 
 // Statement contains normalized account metadata and transactions only. Raw
@@ -39,6 +53,9 @@ type Statement struct {
 	ClosingBalanceMinor *int64
 	Entries             []Entry
 	SkippedRows         int
+	// Failures are rows the parser rejected. They never abort the statement;
+	// valid rows still parse.
+	Failures []ParseFailure
 }
 
 // Parser recognizes and parses one bank's statement format.

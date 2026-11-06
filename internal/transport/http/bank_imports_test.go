@@ -45,8 +45,90 @@ func TestBankImportPreviewReturnsStatelessStatement(t *testing.T) {
 	if response.Data.Bank != "fibank" || response.Data.Format != "xml" || len(response.Data.Entries) != 3 || response.Data.SkippedRows != 5 {
 		t.Fatalf("preview response = %+v", response.Data)
 	}
+	// The sample is a EUR statement and the harness household is USD: preview
+	// exposes validation failures for every entry instead of aborting.
+	if len(response.Data.Failures) != 3 {
+		t.Fatalf("preview failures = %+v, want 3 currency mismatches", response.Data.Failures)
+	}
+	for index, failure := range response.Data.Failures {
+		if failure.Reason != "currency EUR does not match household currency" {
+			t.Errorf("failure %d = %+v", index, failure)
+		}
+	}
 	if got := recorder.Body.String(); bytes.Contains([]byte(got), []byte("ROWSET")) || bytes.Contains([]byte(got), []byte("TEST CUSTOMER")) {
 		t.Fatalf("customer section leaked in preview response: %s", got)
+	}
+}
+
+func TestBankImportPreviewReportsBadRowsAsFailures(t *testing.T) {
+	harness := newResourceServer(t)
+	household, _ := createImportHouseholdAndAccount(t, harness, "EUR")
+	row := func(direction string) string {
+		return `<SYTY_BAL_CUST_STMT><TRN_TYPE>DE</TRN_TYPE><AC_ENTRY_SR_NO>` + direction + `</AC_ENTRY_SR_NO><VALUE_DT>01/10/2026</VALUE_DT><DATE_TIME>02/10/2026</DATE_TIME><AMOUNT>12.34</AMOUNT><DTKT>` + direction + `</DTKT></SYTY_BAL_CUST_STMT>`
+	}
+	statement := `<SYTY_BAL_CUST_MAIN><ACC><SYTY_BAL_CUST_ACC><IBAN>BG00TEST</IBAN><CCY>EUR</CCY><STMT>` +
+		row("D") + row("C") + strings.Replace(row("D"), "<DTKT>D</DTKT>", "<DTKT>X</DTKT>", 1) +
+		`</STMT></SYTY_BAL_CUST_ACC></ACC></SYTY_BAL_CUST_MAIN>`
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", "statement.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(file, strings.NewReader(statement)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/households/"+household.ID+"/bank-imports/preview", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+harness.token)
+	recorder := httptest.NewRecorder()
+	harness.server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("preview status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response DataResponse[statementDTO]
+	decodeResponse(t, recorder, &response)
+	if len(response.Data.Entries) != 2 {
+		t.Fatalf("entries = %d, want the 2 valid rows", len(response.Data.Entries))
+	}
+	if len(response.Data.Failures) != 1 || response.Data.Failures[0].RowIndex != 2 || response.Data.Failures[0].Reason != "debit/credit indicator is unknown" {
+		t.Fatalf("failures = %+v", response.Data.Failures)
+	}
+}
+
+func TestBankImportStructuralErrorsReturnSafeReason(t *testing.T) {
+	harness := newResourceServer(t)
+	household, account := createImportHouseholdAndAccount(t, harness, "EUR")
+	doctype := []byte("<!DOCTYPE foo><SYTY_BAL_CUST_MAIN/>")
+
+	preview := newPreviewRequest(t, household.ID, "statement.xml", doctype)
+	preview.Header.Set("Authorization", "Bearer "+harness.token)
+	recorder := httptest.NewRecorder()
+	harness.server.Handler().ServeHTTP(recorder, preview)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("preview status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Body.String(); !strings.Contains(got, "The statement file is invalid: doctype or entity declarations are not allowed.") {
+		t.Fatalf("preview error message = %s", got)
+	}
+
+	commit := postImport(t, harness, household.ID, account.ID, "statement.xml", doctype)
+	if commit.Code != http.StatusBadRequest {
+		t.Fatalf("commit status = %d: %s", commit.Code, commit.Body.String())
+	}
+	if got := commit.Body.String(); !strings.Contains(got, "The statement file is invalid: doctype or entity declarations are not allowed.") {
+		t.Fatalf("commit error message = %s", got)
+	}
+
+	unknown := newPreviewRequest(t, household.ID, "statement.xml", []byte("not an XML statement"))
+	unknown.Header.Set("Authorization", "Bearer "+harness.token)
+	recorder = httptest.NewRecorder()
+	harness.server.Handler().ServeHTTP(recorder, unknown)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "The statement file format is not supported.") {
+		t.Fatalf("unknown format status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -165,6 +247,25 @@ func postImport(t *testing.T, harness *resourceHarness, householdID, accountID, 
 	recorder := httptest.NewRecorder()
 	harness.server.Handler().ServeHTTP(recorder, request)
 	return recorder
+}
+
+func newPreviewRequest(t *testing.T, householdID, filename string, statement []byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(file, bytes.NewReader(statement)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/households/"+householdID+"/bank-imports/preview", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
 }
 
 func newImportRequest(t *testing.T, householdID, accountID, filename string, statement []byte) *http.Request {

@@ -16,6 +16,20 @@ The parser skips opening and closing balance rows and turnover-total rows
 (`TRN_TYPE` `OP`, `CL`, `DT` or `CT`). It ignores customer and other PII blocks
 (`ROWSET`).
 
+Row handling is deliberately three-tiered:
+
+- **Skipped rows** (not failures): balance/total rows, rows with an empty
+  `DTKT`, and zero-amount transaction rows. They increment `skipped_rows`.
+- **Row failures** (reported, non-fatal): a row with an unknown `TRN_TYPE`,
+  an unknown `DTKT` value, an unparseable `AMOUNT`, date or balance, or an
+  invalid closing-balance row. The row is rejected, recorded in `failures`
+  with its 0-based raw-row index and a safe, value-free reason, and the rest
+  of the statement still imports.
+- **Fatal structural problems**: malformed XML, doctype/entity declarations,
+  excessive nesting, a wrong or missing account block, an invalid document-
+  level balance or period, or more than 20000 raw rows. These return `400`
+  with the reason in the message.
+
 ## Import a statement
 
 1. Open **Household settings → Import bank statement**.
@@ -30,6 +44,13 @@ The parser skips opening and closing balance rows and turnover-total rows
 
 Each parsed entry shows its booked date and value date, direction, amount,
 merchant, description, reference, transaction code and running balance.
+
+The preview also returns a `failures` list. `row_index` is the 0-based index in
+the raw statement row sequence (skipped rows included), so parser failures and
+validation failures (currency mismatch, bad date, non-positive amount) share
+one numbering and can be matched against the source file. `AC_ENTRY_SR_NO` is
+not required: rows without it import using a content-based fallback
+fingerprint.
 
 ## Commit and deduplication
 
@@ -63,15 +84,23 @@ or wait for future transfer matching.
   still applies.
 - Files are parsed in memory and are not retained. Only normalized rows and
   import batches are stored.
+- Non-UTF-8 exports are handled: the parser decodes `windows-1251`,
+  `windows-1252` and `iso-8859-1`/`latin1` declarations to UTF-8. Any other
+  declared charset fails with a named reason instead of a generic parse error.
 - Logs do not contain statement contents or customer data.
 - Rows whose currency differs from the household currency fail with a per-row
-  reason.
+  reason. One bad row never aborts a statement: the response `failures` list
+  names the rejected raw rows and valid rows still import. Batch `rows_total`
+  counts parsed entries plus parser-rejected rows, and `rows_failed` counts
+  both kinds of failure.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
-| `400` unknown format or malformed XML | Confirm this is Fibank `SYTY_BAL_CUST_MAIN` XML, not XLS, CSV or XLSX. |
+| `400` statement error | The response message names the cause, e.g. `The statement file is invalid: no account block found.` — read the reason before re-exporting. Reasons are safe and never quote file contents. |
+| `400` unknown format | The file was not recognized as Fibank `SYTY_BAL_CUST_MAIN` XML. Confirm it is XML, not XLS, CSV or XLSX. |
+| Some rows missing after import | Check the `failures` list in the preview or commit response: each rejected raw row is reported with its index and a safe reason. A single bad row does not block the rest of the statement. |
 | `413` payload too large | Check the global `HTTP_MAX_BODY_BYTES` setting and the 10 MiB handler limit. |
 | Zero entries | Check that the file is the expected statement export and contains transaction rows, not only opening/closing balances or totals. |
 | Currency mismatch | Check the household currency and the currency of each failed row. |

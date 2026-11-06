@@ -100,6 +100,61 @@ func TestImportCommitUsesStableFallbackFingerprintWithoutExternalID(t *testing.T
 	}
 }
 
+func TestImportCommitMergesParserAndValidationFailures(t *testing.T) {
+	entries := []imports.Entry{
+		{RowIndex: 1, ExternalID: "e1", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "USD"},
+		{RowIndex: 3, ExternalID: "bad", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 200, Currency: "EUR"},
+		{RowIndex: 6, ExternalID: "e3", BookedDate: importTestDate(3), ValueDate: importTestDate(2), Direction: imports.DirectionCredit, AmountMinor: 300, Currency: "USD"},
+	}
+	statement := imports.Statement{Bank: "fibank", Format: "xml", Entries: entries, Failures: []imports.ParseFailure{
+		{RowIndex: 2, Reason: "amount is unparseable"},
+		{RowIndex: 4, Reason: "debit/credit indicator is unknown"},
+	}}
+	service, _, actor, household, account := newImportTestService(t, statement)
+	result, err := service.Commit(context.Background(), actor, household, account, "statement.xml", []byte("data"))
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if result.Batch.RowsTotal != 5 || result.Batch.RowsImported != 2 || result.Batch.RowsDuplicate != 0 || result.Batch.RowsFailed != 3 {
+		t.Fatalf("batch = %+v, want total 5 (3 entries + 2 parser failures), imported 2, failed 3", result.Batch)
+	}
+	want := []ImportFailure{
+		{RowIndex: 2, Reason: "amount is unparseable"},
+		{RowIndex: 3, Reason: "currency EUR does not match household currency"},
+		{RowIndex: 4, Reason: "debit/credit indicator is unknown"},
+	}
+	if len(result.Failures) != len(want) {
+		t.Fatalf("failures = %+v, want %+v", result.Failures, want)
+	}
+	for i, failure := range result.Failures {
+		if failure != want[i] {
+			t.Errorf("failure %d = %+v, want %+v", i, failure, want[i])
+		}
+	}
+}
+
+func TestImportPreviewExposesMergedFailures(t *testing.T) {
+	entry := imports.Entry{RowIndex: 1, ExternalID: "e1", BookedDate: importTestDate(2), ValueDate: importTestDate(1), Direction: imports.DirectionDebit, AmountMinor: 100, Currency: "EUR"}
+	statement := imports.Statement{Bank: "fibank", Format: "xml", Entries: []imports.Entry{entry}, Failures: []imports.ParseFailure{
+		{RowIndex: 0, Reason: "transaction type is unknown"},
+	}}
+	service, _, actor, household, _ := newImportTestService(t, statement)
+	preview, err := service.Preview(context.Background(), actor, household, "statement.xml", []byte("data"))
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(preview.Statement.Entries) != 1 {
+		t.Fatalf("preview entries = %d, want 1", len(preview.Statement.Entries))
+	}
+	want := []ImportFailure{
+		{RowIndex: 0, Reason: "transaction type is unknown"},
+		{RowIndex: 1, Reason: "currency EUR does not match household currency"},
+	}
+	if len(preview.Failures) != len(want) || preview.Failures[0] != want[0] || preview.Failures[1] != want[1] {
+		t.Fatalf("preview failures = %+v, want %+v", preview.Failures, want)
+	}
+}
+
 func importTestDate(day int) time.Time {
 	return time.Date(2026, 10, day, 0, 0, 0, 0, time.UTC)
 }
