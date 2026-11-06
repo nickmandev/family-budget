@@ -163,6 +163,69 @@ func TestFibankParserCollectsRowFailuresWithoutAborting(t *testing.T) {
 	}
 }
 
+func TestFibankParserParsesFractionWithoutIntegerPart(t *testing.T) {
+	tests := []struct {
+		amount string
+		want   int64
+	}{
+		{amount: ".27", want: 27},
+		{amount: ".5", want: 50},
+	}
+	for _, test := range tests {
+		t.Run(test.amount, func(t *testing.T) {
+			row := fibankRowXML("9001", test.amount, "D", "01/01/2026", "02/01/2026", "100.00")
+			parsed, err := NewFibankParser().Parse([]byte(fibankStatement(row)))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if len(parsed.Entries) != 1 || len(parsed.Failures) != 0 {
+				t.Fatalf("entries/failures = %+v / %+v, want one entry and no failures", parsed.Entries, parsed.Failures)
+			}
+			if parsed.Entries[0].AmountMinor != test.want {
+				t.Errorf("AmountMinor = %d, want %d", parsed.Entries[0].AmountMinor, test.want)
+			}
+		})
+	}
+}
+
+func TestFibankParserRejectsMalformedAmountsAtRawRowIndexes(t *testing.T) {
+	amounts := []string{"", ".", "-1.00", "1,50", "1.234"}
+	rows := []string{fibankRowXML("9000", "1.00", "D", "01/01/2026", "02/01/2026", "100.00")}
+	for index, amount := range amounts {
+		rows = append(rows, fibankRowXML(fmt.Sprintf("900%d", index+1), amount, "D", "01/01/2026", "02/01/2026", "100.00"))
+	}
+
+	parsed, err := NewFibankParser().Parse([]byte(fibankStatement(rows...)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(parsed.Failures) != len(amounts) {
+		t.Fatalf("failures = %+v, want %d", parsed.Failures, len(amounts))
+	}
+	for index, failure := range parsed.Failures {
+		wantRow := index + 1
+		if failure.RowIndex != wantRow || failure.Reason != "amount is unparseable" {
+			t.Errorf("failure %d = %+v, want row %d with amount is unparseable", index, failure, wantRow)
+		}
+	}
+}
+
+func TestFibankParserImportsStatementWithFractionWithoutIntegerPart(t *testing.T) {
+	first := fibankRowXML("9001", ".27", "D", "01/01/2026", "02/01/2026", "100.00")
+	second := fibankRowXML("9002", "1.50", "C", "01/01/2026", "02/01/2026", "101.50")
+
+	parsed, err := NewFibankParser().Parse([]byte(fibankStatement(first, second)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(parsed.Entries) != 2 || len(parsed.Failures) != 0 {
+		t.Fatalf("entries/failures = %+v / %+v, want two entries and no failures", parsed.Entries, parsed.Failures)
+	}
+	if parsed.Entries[0].AmountMinor != 27 || parsed.Entries[1].AmountMinor != 150 {
+		t.Errorf("AmountMinor values = %d, %d; want 27, 150", parsed.Entries[0].AmountMinor, parsed.Entries[1].AmountMinor)
+	}
+}
+
 func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	good := fibankRowXML("9001", "12.34", "D", "01/01/2026", "02/01/2026", "100.00")
 	noExternalID := strings.Replace(good, "<AC_ENTRY_SR_NO>9001</AC_ENTRY_SR_NO>", "", 1)

@@ -314,14 +314,20 @@ func parseSignedMinor(value string) (int64, bool) {
 	return minor * sign, true
 }
 
+// decimalMinor parses plain decimal amounts in the forms 27, 27.5, 27.55,
+// .27 and .5. Fibank omits the leading zero for sub-unit amounts.
 func decimalMinor(value string) (int64, bool) {
 	parts := strings.Split(value, ".")
-	if len(parts) > 2 || parts[0] == "" {
+	if len(parts) > 2 || (parts[0] == "" && (len(parts) != 2 || parts[1] == "")) {
 		return 0, false
 	}
-	whole, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || whole < 0 {
-		return 0, false
+	var whole int64
+	if parts[0] != "" {
+		var err error
+		whole, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || whole < 0 {
+			return 0, false
+		}
 	}
 	fraction := ""
 	if len(parts) == 2 {
