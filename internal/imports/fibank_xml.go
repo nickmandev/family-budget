@@ -236,14 +236,22 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 			statement.Skips = append(statement.Skips, ParseSkip{RowIndex: rowIndex, Reason: skipReason})
 			continue
 		}
-		amount, ok := parseUnsignedMinor(row.Amount)
+		// Fibank reversals keep the original DTKT but negate AMOUNT: a
+		// negative amount reverses the stated direction (negative D is a
+		// credit/reversal), and the entry stores the positive magnitude.
+		signed, ok := parseSignedMinor(row.Amount)
 		if !ok {
 			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "amount is unparseable"))
 			continue
 		}
-		if amount == 0 {
+		if signed == 0 {
 			statement.SkippedRows++
 			statement.Skips = append(statement.Skips, ParseSkip{RowIndex: rowIndex, Reason: "zero-amount row"})
+			continue
+		}
+		amount, ok := absMinor(signed)
+		if !ok {
+			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "amount is unparseable"))
 			continue
 		}
 		var direction Direction
@@ -255,6 +263,9 @@ func (fibankParser) Parse(data []byte) (Statement, error) {
 		default:
 			statement.Failures = append(statement.Failures, fibankFailure(row, rowIndex, statement.Currency, "debit/credit indicator is unknown"))
 			continue
+		}
+		if signed < 0 {
+			direction = invertDirection(direction)
 		}
 		bookedDate, bookedOK := parseFibankDate(row.BookedDate)
 		valueDate, valueOK := parseFibankDate(row.ValueDate)
@@ -307,14 +318,25 @@ func fibankFailure(row fibankRow, rowIndex int, currency, reason string) ParseFa
 		Reference:       strings.TrimSpace(row.Reference),
 		TransactionCode: strings.TrimSpace(row.TransactionCode),
 	}
+	// Mirror the entry normalization so other failures on the same row stay
+	// understandable: a negative Fibank amount shows as a positive magnitude
+	// with the inverted direction.
+	signed, amountParsed := parseSignedMinor(row.Amount)
+	var direction Direction
 	switch strings.TrimSpace(row.Direction) {
 	case "D":
-		failure.Direction = DirectionDebit
+		direction = DirectionDebit
 	case "C":
-		failure.Direction = DirectionCredit
+		direction = DirectionCredit
 	}
-	if amount, ok := parseUnsignedMinor(row.Amount); ok {
-		failure.AmountMinor = &amount
+	if amountParsed && signed < 0 {
+		direction = invertDirection(direction)
+	}
+	failure.Direction = direction
+	if amountParsed {
+		if amount, ok := absMinor(signed); ok {
+			failure.AmountMinor = &amount
+		}
 	}
 	if bookedDate, ok := parseFibankDate(row.BookedDate); ok {
 		failure.BookedDate = &bookedDate
@@ -335,12 +357,30 @@ func parseFibankDate(value string) (time.Time, bool) {
 	return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC), true
 }
 
-func parseUnsignedMinor(value string) (int64, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.HasPrefix(value, "-") || strings.HasPrefix(value, "+") {
+// absMinor returns the positive magnitude of a signed minor-unit amount.
+// math.MinInt64 has no positive counterpart, so it is rejected instead of
+// overflowing into a negative value.
+func absMinor(value int64) (int64, bool) {
+	if value == math.MinInt64 {
 		return 0, false
 	}
-	return decimalMinor(value)
+	if value < 0 {
+		return -value, true
+	}
+	return value, true
+}
+
+// invertDirection flips a normalized direction for a Fibank reversal row,
+// where a negated AMOUNT reverses the stated DTKT.
+func invertDirection(direction Direction) Direction {
+	switch direction {
+	case DirectionDebit:
+		return DirectionCredit
+	case DirectionCredit:
+		return DirectionDebit
+	default:
+		return direction
+	}
 }
 
 func parseSignedMinor(value string) (int64, bool) {
