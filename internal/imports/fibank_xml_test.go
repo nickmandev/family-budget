@@ -3,6 +3,7 @@ package imports
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -208,7 +209,7 @@ func TestFibankParserParsesFractionWithoutIntegerPart(t *testing.T) {
 }
 
 func TestFibankParserRejectsMalformedAmountsAtRawRowIndexes(t *testing.T) {
-	amounts := []string{"", ".", "-1.00", "1,50", "1.234"}
+	amounts := []string{"", ".", "-1.234", "1,50", "1.234"}
 	rows := []string{fibankRowXML("9000", "1.00", "D", "01/01/2026", "02/01/2026", "100.00")}
 	for index, amount := range amounts {
 		rows = append(rows, fibankRowXML(fmt.Sprintf("900%d", index+1), amount, "D", "01/01/2026", "02/01/2026", "100.00"))
@@ -245,6 +246,91 @@ func TestFibankParserImportsStatementWithFractionWithoutIntegerPart(t *testing.T
 	}
 }
 
+func TestFibankParserNormalizesNegativeAmountReversals(t *testing.T) {
+	tests := []struct {
+		name          string
+		amount        string
+		dtkt          string
+		wantEntry     bool
+		wantDirection Direction
+		wantAmount    int64
+		wantSkip      string
+		wantFailure   bool
+	}{
+		{name: "negative debit becomes credit", amount: "-1000", dtkt: "D", wantEntry: true, wantDirection: DirectionCredit, wantAmount: 100000},
+		{name: "negative fraction debit becomes credit", amount: "-.51", dtkt: "D", wantEntry: true, wantDirection: DirectionCredit, wantAmount: 51},
+		{name: "negative credit becomes debit", amount: "-12.34", dtkt: "C", wantEntry: true, wantDirection: DirectionDebit, wantAmount: 1234},
+		{name: "positive debit unchanged", amount: "1000", dtkt: "D", wantEntry: true, wantDirection: DirectionDebit, wantAmount: 100000},
+		{name: "positive credit unchanged", amount: "12.34", dtkt: "C", wantEntry: true, wantDirection: DirectionCredit, wantAmount: 1234},
+		{name: "negative zero still skipped", amount: "-0", dtkt: "D", wantSkip: "zero-amount row"},
+		{name: "malformed negative stays a failure", amount: "-1.234", dtkt: "D", wantFailure: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			row := fibankRowXML("9001", test.amount, test.dtkt, "01/01/2026", "02/01/2026", "100.00")
+			parsed, err := NewFibankParser().Parse([]byte(fibankStatement(row)))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			switch {
+			case test.wantEntry:
+				if len(parsed.Entries) != 1 || len(parsed.Failures) != 0 || parsed.SkippedRows != 0 {
+					t.Fatalf("entries/failures/skips = %+v / %+v / %d, want one entry", parsed.Entries, parsed.Failures, parsed.SkippedRows)
+				}
+				entry := parsed.Entries[0]
+				if entry.Direction != test.wantDirection || entry.AmountMinor != test.wantAmount {
+					t.Errorf("entry = %s / %d, want %s / %d", entry.Direction, entry.AmountMinor, test.wantDirection, test.wantAmount)
+				}
+			case test.wantSkip != "":
+				if len(parsed.Entries) != 0 || parsed.SkippedRows != 1 || len(parsed.Skips) != 1 || parsed.Skips[0].Reason != test.wantSkip {
+					t.Fatalf("entries/skips = %+v / %+v, want one %q skip", parsed.Entries, parsed.Skips, test.wantSkip)
+				}
+			case test.wantFailure:
+				if len(parsed.Failures) != 1 || len(parsed.Entries) != 0 {
+					t.Fatalf("entries/failures = %+v / %+v, want one amount failure", parsed.Entries, parsed.Failures)
+				}
+				if parsed.Failures[0].Reason != "amount is unparseable" {
+					t.Errorf("failure = %+v, want amount is unparseable", parsed.Failures[0])
+				}
+			}
+		})
+	}
+}
+
+func TestFibankFailureDetailsNormalizeNegativeAmount(t *testing.T) {
+	row := fibankRowXML("9001", "-12.34", "D", "01/01/2026", "31/02/2026", "100.00")
+	parsed, err := NewFibankParser().Parse([]byte(fibankStatement(row)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(parsed.Entries) != 0 || len(parsed.Failures) != 1 {
+		t.Fatalf("entries/failures = %+v / %+v, want one failure", parsed.Entries, parsed.Failures)
+	}
+	failure := parsed.Failures[0]
+	if failure.Reason != "booked date is unparseable" {
+		t.Errorf("reason = %q, want booked date is unparseable", failure.Reason)
+	}
+	if failure.Direction != DirectionCredit || failure.AmountMinor == nil || *failure.AmountMinor != 1234 {
+		t.Errorf("failure details = %s / %v, want CREDIT / 1234", failure.Direction, failure.AmountMinor)
+	}
+}
+
+func TestAbsMinorRejectsUnrepresentableMagnitude(t *testing.T) {
+	if magnitude, ok := absMinor(math.MinInt64); ok {
+		t.Errorf("absMinor(MinInt64) = %d, want rejection", magnitude)
+	}
+	for _, value := range []int64{-1234, 0, 1234} {
+		magnitude, ok := absMinor(value)
+		want := value
+		if value < 0 {
+			want = -value
+		}
+		if !ok || magnitude != want {
+			t.Errorf("absMinor(%d) = %d, %t; want %d, true", value, magnitude, ok, want)
+		}
+	}
+}
+
 func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	good := fibankRowXML("9001", "12.34", "D", "01/01/2026", "02/01/2026", "100.00")
 	noExternalID := strings.Replace(good, "<AC_ENTRY_SR_NO>9001</AC_ENTRY_SR_NO>", "", 1)
@@ -260,11 +346,14 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(parsed.Entries) != 4 {
-		t.Fatalf("entries = %+v, want rows 0, 1, 4 and 8", parsed.Entries)
+	if len(parsed.Entries) != 5 {
+		t.Fatalf("entries = %+v, want rows 0, 1, 4, 5 and 8", parsed.Entries)
 	}
-	if parsed.Entries[0].RowIndex != 0 || parsed.Entries[1].RowIndex != 1 || parsed.Entries[2].RowIndex != 4 || parsed.Entries[3].RowIndex != 8 {
-		t.Errorf("entry rows = %d, %d, %d, %d; want 0, 1, 4 and 8", parsed.Entries[0].RowIndex, parsed.Entries[1].RowIndex, parsed.Entries[2].RowIndex, parsed.Entries[3].RowIndex)
+	entryRows := []int{0, 1, 4, 5, 8}
+	for index, wantRow := range entryRows {
+		if parsed.Entries[index].RowIndex != wantRow {
+			t.Errorf("entry %d raw row = %d, want %d", index, parsed.Entries[index].RowIndex, wantRow)
+		}
 	}
 	if parsed.SkippedRows != 2 {
 		t.Errorf("SkippedRows = %d, want 2", parsed.SkippedRows)
@@ -279,11 +368,13 @@ func TestFibankParserClassifiesSkipsAndFailures(t *testing.T) {
 	if parsed.Entries[2].Direction != DirectionDebit || parsed.Entries[2].AmountMinor != 1234 {
 		t.Errorf("unknown transaction type entry = %+v, want debit 1234", parsed.Entries[2])
 	}
-	if parsed.Entries[3].BalanceAfterMinor != nil {
-		t.Errorf("unparseable balance = %v, want nil", parsed.Entries[3].BalanceAfterMinor)
+	if parsed.Entries[3].Direction != DirectionCredit || parsed.Entries[3].AmountMinor != 1234 {
+		t.Errorf("negative amount reversal entry = %+v, want credit 1234", parsed.Entries[3])
+	}
+	if parsed.Entries[4].BalanceAfterMinor != nil {
+		t.Errorf("unparseable balance = %v, want nil", parsed.Entries[4].BalanceAfterMinor)
 	}
 	want := map[int]string{
-		5: "amount is unparseable",
 		6: "booked date is unparseable",
 		7: "value date is unparseable",
 	}
