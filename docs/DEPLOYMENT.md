@@ -351,6 +351,29 @@ If you want to ship under different numbering, or not ship anything, delete or
 rename the draft. Drafts are informational only and do not affect deployed
 versions until published or a tag is pushed.
 
+### Manual image rerun for an existing tag
+
+A tag-push run uses the workflow file stored at the tag commit, so a tag whose
+image workflow failed under an older, buggy definition cannot be fixed by
+re-running that run. `release-images.yml` also accepts a `workflow_dispatch`
+input for the tag; dispatching it from `main` runs the current workflow
+definition against the already-published tag (it validates that the tag's
+commit is reachable from `origin/main` with full history, then republishes both
+GHCR images):
+
+```sh
+gh workflow run release-images.yml --ref main -f tag=vX.Y.Z
+```
+
+For example, after a failed v1.2.0 image build:
+
+```sh
+gh workflow run release-images.yml --ref main -f tag=v1.2.0
+```
+
+This recovery path does not create, move, or repoint tags and does not modify
+the release object. The normal owner-published-draft flow above is unchanged.
+
 The VPS-side systemd timer polls the existing clone for new stable tags reachable
 from `origin/main`. When it finds a version newer than `APP_VERSION` in `.env`,
 it waits for both matching GHCR images to become pullable (up to six minutes),

@@ -69,8 +69,11 @@ jobs:
           done < <(gh release list --json tagName,isDraft --limit 1000 --jq '.[] | select(.isDraft and (.tagName | startswith("v"))) | .tagName')
 
           if [[ "$is_draft" == true ]]; then
-            gh release edit "$TAG" --draft --title "$TAG" --notes "$notes"
-            echo "draft updated $TAG"
+            # The published-release guard above keeps this deletion limited to drafts.
+            # Recreate the draft so target_commitish and notes both match the current tip.
+            gh release delete "$TAG" --yes
+            gh release create "$TAG" --draft --target "$SHA" --title "$TAG" --notes "$notes"
+            echo "draft refreshed $TAG"
           else
             gh release create "$TAG" --draft --target "$SHA" --title "$TAG" --notes "$notes"
             echo "draft created $TAG"

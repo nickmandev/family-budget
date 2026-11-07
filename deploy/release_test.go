@@ -21,7 +21,13 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 	workflow := readDeployFile(t, ".github/workflows/release-images.yml")
 	for _, want := range []string{
 		"tags: [\"v*\"]",
-		`TAG="$GITHUB_REF_NAME"`,
+		"workflow_dispatch:",
+		"inputs:",
+		"tag:",
+		"description: Existing version tag to publish",
+		"required: true",
+		"type: string",
+		`TAG="${{ inputs.tag || github.ref_name }}"`,
 		"uses: ./.github/workflows/test.yml",
 		"needs: test",
 		"packages: write",
@@ -29,13 +35,28 @@ func TestReleaseWorkflowPublishesTagImagesOnlyAfterVerification(t *testing.T) {
 		"docker/build-push-action@v6",
 		"family-budget-api:",
 		"family-budget-migrate:",
+		"git fetch origin --tags",
+		`git fetch origin "refs/tags/$TAG:refs/tags/$TAG"`,
+		`tag_sha=$(git rev-parse "refs/tags/$TAG^{commit}")`,
+		"git fetch origin main",
+		"git merge-base --is-ancestor \"$tag_sha\" origin/main",
+		"version=${TAG#v}",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("release workflow does not contain %q", want)
 		}
 	}
+	if strings.Contains(workflow, "--depth=1") {
+		t.Error("release workflow must fetch full history for ancestry validation")
+	}
+	if strings.Contains(workflow, `TAG="$GITHUB_REF_NAME"`) {
+		t.Error("release workflow must honour the manual dispatch tag input, not only the pushed ref")
+	}
+	if strings.Contains(workflow, "merge-base --is-ancestor \"$GITHUB_SHA\"") {
+		t.Error("release workflow must validate the tagged commit's ancestry, not the checked-out SHA")
+	}
 	if strings.Contains(workflow, "workflow_call:") {
-		t.Error("release image workflow must only publish from pushed tags")
+		t.Error("release image workflow must only run for pushed tags or a manual tag dispatch, not as a reusable workflow")
 	}
 	testWorkflow := readDeployFile(t, ".github/workflows/test.yml")
 	for _, want := range []string{"workflow_call:", "  test:"} {
@@ -57,7 +78,8 @@ func TestReleaseDrafterNeverPublishes(t *testing.T) {
 		"branches: [main]",
 		"workflow_dispatch:",
 		"scripts/next-version.sh",
-		"gh release create \"$TAG\" --draft",
+		"gh release create \"$TAG\" --draft --target \"$SHA\"",
+		"gh release delete \"$TAG\" --yes",
 		"contents: write",
 	} {
 		if !strings.Contains(workflow, want) {

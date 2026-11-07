@@ -3,6 +3,12 @@ name: Release images
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish (e.g. v1.2.0)
+        required: true
+        type: string
 
 concurrency:
   group: release-images-${{ github.ref }}
@@ -32,18 +38,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="$GITHUB_REF_NAME"
+          TAG="${{ inputs.tag || github.ref_name }}"
           if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             echo "Release tags must use vMAJOR.MINOR.PATCH (for example v1.2.3). Got: $TAG" >&2
             exit 1
           fi
-          version="${BASH_REMATCH[1]}"
-          git fetch origin main --depth=1
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "Refusing to deploy: release tag $TAG does not point to a commit on origin/main." >&2
+          # A dispatch run checks out main, so resolve the tag's own commit
+          # instead of trusting the checked-out SHA.
+          git fetch origin --tags
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          fi
+          tag_sha=$(git rev-parse "refs/tags/$TAG^{commit}")
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$tag_sha" origin/main; then
+            echo "Refusing to deploy: release tag $TAG ($tag_sha) does not point to a commit on origin/main." >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Normalize image owner
         id: image
